@@ -82,10 +82,10 @@ export class GToM {
   /**
    * Score decision authenticity
    */
-  scoreDecisionAuthenticity(decision: {
+  async scoreDecisionAuthenticity(decision: {
     context: string;
     action: string;
-  }): AuthenticityScore {
+  }): Promise<AuthenticityScore> {
     const vulnerabilities = this.vulnerabilityManager.getVulnerabilities();
     const cognitiveState = this.vulnerabilityManager.getCurrentCognitiveState();
     const recentInfluences = this.vulnerabilityManager.getInfluenceLedger(10).map(

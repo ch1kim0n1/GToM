@@ -35,8 +35,8 @@ describe('AuthenticityScorer', () => {
     scorer = new AuthenticityScorer();
   });
 
-  it('scores a clean decision as highly authentic (> 0.6)', () => {
-    const result = scorer.scoreDecision({
+  it('scores a clean decision as highly authentic (> 0.6)', async () => {
+    const result = await scorer.scoreDecision({
       context: 'I want to purchase this product because it fits my workflow',
       action: 'purchase',
       vulnerabilities: [makeVulnerability('authority_bias', 0.5)],
@@ -51,8 +51,8 @@ describe('AuthenticityScorer', () => {
     expect(result.score_id).toBeDefined();
   });
 
-  it('scores a manipulated decision as less authentic (< 0.7)', () => {
-    const result = scorer.scoreDecision({
+  it('scores a manipulated decision as less authentic (< 0.7)', async () => {
+    const result = await scorer.scoreDecision({
       context: 'I must buy now before it expires',
       action: 'purchase_urgent',
       vulnerabilities: [
@@ -70,7 +70,7 @@ describe('AuthenticityScorer', () => {
     expect(result.authenticity_score).toBeLessThan(0.4);
   });
 
-  it('produces a score between 0 and 1 in all cases', () => {
+  it('produces a score between 0 and 1 in all cases', async () => {
     const edgeCases = [
       { vulnerabilities: [], cognitiveState: makeCognitiveState(), recentInfluences: [] },
       {
@@ -81,7 +81,7 @@ describe('AuthenticityScorer', () => {
     ];
 
     for (const ec of edgeCases) {
-      const result = scorer.scoreDecision({
+      const result = await scorer.scoreDecision({
         context: 'test',
         action: 'test_action',
         ...ec,
@@ -93,8 +93,8 @@ describe('AuthenticityScorer', () => {
     }
   });
 
-  it('reports manipulation indicators when high-severity vulnerabilities are active', () => {
-    const result = scorer.scoreDecision({
+  it('reports manipulation indicators when high-severity vulnerabilities are active', async () => {
+    const result = await scorer.scoreDecision({
       context: 'Everyone is buying this, I should too',
       action: 'follow_crowd',
       vulnerabilities: [makeVulnerability('social_proof', 0.9)],

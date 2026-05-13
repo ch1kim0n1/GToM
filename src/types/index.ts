@@ -174,10 +174,6 @@ export const ConflictPredictionResponseSchema = z.object({
 
 export type ConflictPredictionResponse = z.infer<typeof ConflictPredictionResponseSchema>;
 
-// ============================================================================
-// Integration Types
-// ============================================================================
-
 export const GBrainCognitiveQuerySchema = z.object({
   query_type: z.enum(['beliefs', 'desires', 'intentions', 'biases']),
   context: z.string(),
@@ -210,3 +206,43 @@ export const GBrainCognitiveResponseSchema = z.object({
 });
 
 export type GBrainCognitiveResponse = z.infer<typeof GBrainCognitiveResponseSchema>;
+
+// Multi-Model Tier Configuration
+export interface TierConfig {
+  name: string;
+  model_id: string;
+  cost_per_1k_tokens_usd: number;
+  avg_latency_ms: number;
+  use_case: string;
+}
+
+export interface MultiModelConfig {
+  default_tier: string;
+  escalation_enabled: boolean;
+  escalation_triggers: {
+    min_confidence: number;
+    min_quality_score: number;
+    max_ambiguity: number;
+  };
+  consensus_threshold: number;
+  cost_budget_usd_per_hour: number;
+  allow_tier3: boolean;
+}
+
+export interface EscalationMetrics {
+  total_tasks: number;
+  escalated_tasks: number;
+  tier1_success_rate: number;
+  tier2_success_rate: number;
+  tier3_success_rate: number;
+  tier1_count: number;
+  tier2_count: number;
+  tier3_count: number;
+  avg_cost_per_task_usd: number;
+  avg_latency_ms: number;
+  tier1_avg_latency_ms: number;
+  tier2_avg_latency_ms: number;
+  tier3_avg_latency_ms: number;
+  consensus_agreement_rate: number;
+  budget_remaining_usd: number;
+}

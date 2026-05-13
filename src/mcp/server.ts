@@ -183,7 +183,7 @@ class GToMMCPServer {
     context: string;
     action: string;
   }) {
-    const score = this.gtom.scoreDecisionAuthenticity({
+    const score = await this.gtom.scoreDecisionAuthenticity({
       context: args.context,
       action: args.action,
     });

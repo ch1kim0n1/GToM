@@ -1,10 +1,14 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import {
   AuthenticityScore,
   Decision,
   Vulnerability,
   CognitiveState,
 } from '../types/index.js';
+import { ReceiptRegistry } from './receipt-registry.js';
+import { GTOM_RUBRIC_V1, authenticityToLevel, getRubricHash } from './gtom-rubric.js';
+import { ExecutionReceipt } from '../types/quality-rubric.js';
 
 /**
  * Authenticity Scorer
@@ -16,6 +20,12 @@ import {
  * - Provide confidence scores
  */
 export class AuthenticityScorer {
+  private receiptRegistry: ReceiptRegistry;
+
+  constructor() {
+    this.receiptRegistry = new ReceiptRegistry('gtom');
+  }
+
   /**
    * Score a decision for authenticity
    */
@@ -33,7 +43,7 @@ export class AuthenticityScorer {
     const timePressure = this.calculateTimePressure(decision);
     const informationCompleteness = this.calculateInformationCompleteness(decision);
     const emotionalStateImpact = this.calculateEmotionalStateImpact(decision);
-    
+
     const authenticityScore = this.calculateOverallScore({
       selfAlignment,
       externalPressure,
@@ -41,14 +51,46 @@ export class AuthenticityScorer {
       informationCompleteness,
       emotionalStateImpact,
     });
-    
+
     const manipulationIndicators = this.detectManipulationIndicators(decision);
-    
+    const confidence = this.calculateConfidence(decision);
+    const scoreId = uuidv4();
+    const decisionId = uuidv4();
+
+    // Emit execution receipt for quality tracking (fire-and-forget).
+    const receipt: ExecutionReceipt = {
+      receipt_id: uuidv4(),
+      schema_version: 1,
+      timestamp: new Date().toISOString(),
+      project: 'gtom' as const,
+      rubric_name: GTOM_RUBRIC_V1.name,
+      rubric_sha8: getRubricHash(GTOM_RUBRIC_V1),
+      input_hash: crypto.createHash('sha256').update(JSON.stringify(decision)).digest('hex').substring(0, 16),
+      models_used: ['claude-sonnet-4-6'],
+      config_hash: crypto.createHash('sha256').update(JSON.stringify(GTOM_RUBRIC_V1)).digest('hex').substring(0, 16),
+      verdict: authenticityScore >= 0.6 ? 'pass' : authenticityScore >= 0.4 ? 'pass_with_warnings' : 'fail',
+      scores: {
+        authenticity: { score: authenticityScore, confidence, weight: 1.0 },
+      },
+      overall_score: authenticityScore,
+      hard_gates_passed: authenticityScore >= 0.6,
+      cost_usd: 0,
+      metadata: {
+        decision_id: decisionId,
+        score_id: scoreId,
+        rubric_level: authenticityToLevel(authenticityScore),
+        manipulation_indicators: manipulationIndicators,
+      },
+    };
+    this.receiptRegistry.append(receipt).catch(err => {
+      console.warn('[GToM] Failed to emit receipt:', err);
+    });
+
     return {
-      score_id: uuidv4(),
-      decision_id: uuidv4(),
+      score_id: scoreId,
+      decision_id: decisionId,
       authenticity_score: authenticityScore,
-      confidence: this.calculateConfidence(decision),
+      confidence,
       factors: {
         self_alignment: selfAlignment,
         external_pressure: externalPressure,
