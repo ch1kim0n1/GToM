@@ -1,10 +1,11 @@
 // GToM/test/authenticity.test.ts
+import { v4 as uuidv4 } from 'uuid';
 import { AuthenticityScorer } from '../src/core/authenticity.js';
 import { Vulnerability, CognitiveState } from '../src/types/index.js';
 
 function makeVulnerability(category: Vulnerability['category'], level: number): Vulnerability {
   return {
-    vulnerability_id: 'test-vuln-id',
+    vulnerability_id: uuidv4(),
     category,
     baseline_level: 0.5,
     current_level: level,
@@ -16,7 +17,7 @@ function makeVulnerability(category: Vulnerability['category'], level: number): 
 
 function makeCognitiveState(overrides: Partial<CognitiveState> = {}): CognitiveState {
   return {
-    state_id: 'test-state-id',
+    state_id: uuidv4(),
     timestamp: new Date().toISOString(),
     trust_level: 0.8,
     cognitive_load: 0.2,
@@ -66,7 +67,7 @@ describe('AuthenticityScorer', () => {
       recentInfluences: ['Limited offer! Only 1 left!', 'CEO says act now'],
     });
 
-    expect(result.authenticity_score).toBeLessThan(0.7);
+    expect(result.authenticity_score).toBeLessThan(0.4);
   });
 
   it('produces a score between 0 and 1 in all cases', () => {
