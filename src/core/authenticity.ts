@@ -80,11 +80,10 @@ export class AuthenticityScorer {
     const trustScore = decision.cognitiveState.trust_level;
     const cognitiveLoadPenalty = decision.cognitiveState.cognitive_load * 0.3;
     
-    const avgVulnerability = decision.vulnerabilities.reduce(
-      (sum, v) => sum + v.current_level,
-      0
-    ) / decision.vulnerabilities.length;
-    
+    const avgVulnerability = decision.vulnerabilities.length > 0
+      ? decision.vulnerabilities.reduce((sum, v) => sum + v.current_level, 0) / decision.vulnerabilities.length
+      : 0;
+
     const vulnerabilityPenalty = avgVulnerability * 0.4;
     
     const influencePenalty = Math.min(0.3, decision.recentInfluences.length * 0.05);
