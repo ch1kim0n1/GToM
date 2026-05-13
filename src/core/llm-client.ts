@@ -11,6 +11,8 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
+import { encoding_for_model, get_encoding } from 'tiktoken';
+import { createLogger } from '../../shared/src/core/structured-logger.js';
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -98,12 +100,28 @@ export function getModelPricing(modelId: string): ModelPricing | null {
 }
 
 /**
- * Simple token counter (approximate)
- * In production, use provider-specific tokenizers
+ * Token counter using tiktoken for accurate token counting
+ * Falls back to general-purpose tokenizer if model-specific one fails
  */
-export function estimateTokens(text: string): number {
-  // Rough approximation: ~4 characters per token
-  return Math.ceil(text.length / 4);
+export function estimateTokens(text: string, model: string = 'gpt-4o'): number {
+  try {
+    const encoding = encoding_for_model(model as any);
+    const tokens = encoding.encode(text);
+    encoding.free();
+    return tokens.length;
+  } catch (error) {
+    // Fallback to a general-purpose tokenizer rather than a length heuristic
+    console.warn('[LLMClient] tiktoken failed, falling back to cl100k_base:', error);
+    try {
+      const fallback = get_encoding('cl100k_base');
+      const tokens = fallback.encode(text);
+      fallback.free();
+      return tokens.length;
+    } catch (e) {
+      // Last resort: rough approximation
+      return Math.ceil(text.length / 4);
+    }
+  }
 }
 
 /**
@@ -116,6 +134,7 @@ export class LLMClient {
   private totalCostUsd: number = 0;
   private totalTokens: number = 0;
   private callCount: number = 0;
+  private logger = createLogger('gtom');
 
   constructor(config: LLMClientConfig = {}) {
     this.config = {
@@ -159,19 +178,28 @@ export class LLMClient {
     const temperature = options.temperature ?? 0.7;
     const startTime = Date.now();
 
-    const inputTokens = estimateTokens(prompt);
     let content: string;
+    let inputTokens: number;
+    let outputTokens: number;
 
     if (this.anthropicClient && this.isAnthropicModel(model)) {
-      content = await this.callAnthropic(prompt, model, maxTokens, temperature);
+      const result = await this.callAnthropic(prompt, model, maxTokens, temperature);
+      content = result.content;
+      inputTokens = result.inputTokens;
+      outputTokens = result.outputTokens;
     } else if (this.openaiClient && this.isOpenAIModel(model)) {
-      content = await this.callOpenAI(prompt, model, maxTokens, temperature);
+      const result = await this.callOpenAI(prompt, model, maxTokens, temperature);
+      content = result.content;
+      inputTokens = result.inputTokens;
+      outputTokens = result.outputTokens;
     } else {
-      // Fallback to simulation if no client available
-      content = await this.simulateLLMCall(prompt, model, temperature);
+      throw new Error(`No API client available for model: ${model}`);
     }
 
-    const outputTokens = estimateTokens(content);
+    if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)) {
+      inputTokens = estimateTokens(prompt, model);
+      outputTokens = estimateTokens(content, model);
+    }
     const latency = Date.now() - startTime;
     const cost = estimateCostUsd(model, inputTokens, outputTokens);
 
@@ -242,36 +270,69 @@ export class LLMClient {
   /**
    * Simulate an LLM call (fallback when SDK clients are not available)
    */
-  private async simulateLLMCall(
+  private async callAnthropic(
     prompt: string,
     model: string,
-    temperature?: number
-  ): Promise<string> {
-    const pricing = MODEL_PRICING[model];
-    const latency = pricing?.avg_latency_ms || 1000;
-    await new Promise(resolve => setTimeout(resolve, latency / 10));
+    maxTokens: number,
+    temperature: number
+  ): Promise<{ content: string; inputTokens: number; outputTokens: number }> {
+    if (!this.anthropicClient) {
+      throw new Error('Anthropic client not initialized');
+    }
 
-    if (prompt.toLowerCase().includes('influence') || prompt.toLowerCase().includes('manipulation')) {
-      return JSON.stringify({
-        patterns: [
-          { pattern: 'authority_bias', severity: 'medium', confidence: 0.7 },
-          { pattern: 'social_proof', severity: 'low', confidence: 0.5 },
+    return this.retryWithBackoff(async () => {
+      const message = await this.anthropicClient!.messages.create({
+        model,
+        max_tokens: maxTokens,
+        temperature,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
         ],
-        reasoning: 'Detected potential influence tactics in content'
       });
+
+      return {
+        content: message.content
+          .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
+          .map(block => block.text)
+          .join('\n'),
+        inputTokens: message.usage?.input_tokens ?? Number.NaN,
+        outputTokens: message.usage?.output_tokens ?? Number.NaN,
+      };
+    }, `Anthropic API call (model: ${model})`);
+  }
+
+  private async callOpenAI(
+    prompt: string,
+    model: string,
+    maxTokens: number,
+    temperature: number
+  ): Promise<{ content: string; inputTokens: number; outputTokens: number }> {
+    if (!this.openaiClient) {
+      throw new Error('OpenAI client not initialized');
     }
 
-    if (prompt.toLowerCase().includes('vulnerability') || prompt.toLowerCase().includes('cognitive')) {
-      return JSON.stringify({
-        vulnerability_delta: 0.1,
-        reasoning: 'Content increases susceptibility to manipulation'
+    return this.retryWithBackoff(async () => {
+      const completion = await this.openaiClient!.chat.completions.create({
+        model,
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        max_tokens: maxTokens,
+        temperature,
       });
-    }
 
-    return JSON.stringify({
-      response: 'Analyzed',
-      confidence: 0.7
-    });
+      return {
+        content: completion.choices[0]?.message?.content || '',
+        inputTokens: completion.usage?.prompt_tokens ?? Number.NaN,
+        outputTokens: completion.usage?.completion_tokens ?? Number.NaN,
+      };
+    }, `OpenAI API call (model: ${model})`);
   }
 
   /**

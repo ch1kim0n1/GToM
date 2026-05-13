@@ -436,26 +436,62 @@ program
 program
   .command('cost')
   .description('Show cost information')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
-  .option('--day <date>', 'Show costs for specific day (YYYY-MM-DD)')
-  .option('--week <week>', 'Show costs for specific week (YYYY-Www)')
+  .option('--day', 'Show today\'s spend (default)')
+  .option('--week', 'Show this week\'s spend')
+  .option('--month', 'Show this month\'s spend')
+  .option('--by-model', 'Break down by model')
+  .option('--by-operation', 'Break down by operation')
   .option('--json', 'Output as JSON')
-  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    const result = {
-      day: options.day,
-      week: options.week,
-      status: 'not_implemented',
-      message: 'Cost not implemented in MVP',
-    };
+    try {
+      const { BudgetLedger } = await import('../core/budget-ledger.js');
+      const ledger = new BudgetLedger('gtom');
+      await ledger.init();
 
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else if (!options.quiet) {
-      console.log(chalk.blue.bold('[GToM] Fetching cost information'));
-      console.log(chalk.yellow('Cost not implemented in MVP'));
+      let spend = 0;
+      if (options.week) {
+        spend = ledger.getWeeklySpend();
+      } else if (options.month) {
+        spend = ledger.getMonthlySpend();
+      } else {
+        spend = ledger.getDailySpend();
+      }
+
+      if (options.json) {
+        const breakdown = {};
+        if (options.byModel) {
+          breakdown['by_model'] = ledger.getSpendByModel();
+        }
+        if (options.byOperation) {
+          breakdown['by_operation'] = ledger.getSpendByScope();
+        }
+        console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
+      } else {
+        const period = options.week ? 'this week' : options.month ? 'this month' : 'today';
+        console.log(chalk.blue(`LLM Spend ${period}: $${spend.toFixed(4)}`));
+        
+        if (options.byModel) {
+          const byModel = ledger.getSpendByModel();
+          console.log(chalk.gray('\nBy model:'));
+          for (const [model, cost] of Object.entries(byModel)) {
+            console.log(`  ${model}: $${(cost as number).toFixed(4)}`);
+          }
+        }
+        
+        if (options.byOperation) {
+          const byOp = ledger.getSpendByScope();
+          console.log(chalk.gray('\nBy operation:'));
+          for (const [op, cost] of Object.entries(byOp)) {
+            console.log(`  ${op}: $${(cost as number).toFixed(4)}`);
+          }
+        }
+      }
+      
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Cost query failed:'), error);
+      process.exit(1);
     }
-    process.exit(0);
   });
 
 program.parse();
