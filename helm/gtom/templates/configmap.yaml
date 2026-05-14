@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gtom.fullname" . }}-config
+  labels:
+    {{- include "gtom.labels" . | nindent 4 }}
+data:
+  gbrain-endpoint: {{ .Values.config.gbrainEndpoint | quote }}
+  vulnerability-threshold: {{ .Values.config.vulnerabilityThreshold | quote }}
+  authenticity-threshold: {{ .Values.config.authenticityThreshold | quote }}
+  ice-enabled: {{ .Values.config.iceEnabled | quote }}
+  influence-tracking: {{ .Values.config.influenceTracking | quote }}
+  log-level: {{ .Values.config.logLevel | quote }}

@@ -5,10 +5,11 @@ import {
   Vulnerability,
   CognitiveState,
 } from '../types/index.js';
+import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
 
 /**
  * Cognitive ICE (Intrusion Countermeasures Engine)
- * 
+ *
  * Responsibilities:
  * - Self-audit agent behavior for alignment with user values
  * - Detect when agent might be exploiting vulnerabilities
@@ -16,6 +17,11 @@ import {
  * - Provide recommendations for defensive measures
  */
 export class CognitiveICE {
+  private logger: StructuredLogger;
+
+  constructor() {
+    this.logger = new StructuredLogger('gtom-cognitive-ice');
+  }
   /**
    * Perform self-audit on agent behavior
    */
@@ -352,13 +358,13 @@ export class CognitiveICE {
   async executeIntervention(intervention: InterventionAction): Promise<boolean> {
     // In production, would integrate with agent execution environment
     // For MVP, just mark as executed
-    
-    console.log(`[CognitiveICE] Executing intervention: ${intervention.action_type}`);
-    console.log(`[CognitiveICE] Message: ${intervention.message}`);
-    
+
+    this.logger.info(`Executing intervention: ${intervention.action_type}`);
+    this.logger.info(`Message: ${intervention.message}`);
+
     intervention.executed = true;
     intervention.outcome = 'executed';
-    
+
     return true;
   }
 }

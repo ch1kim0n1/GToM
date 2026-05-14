@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gtom.fullname" . }}
+  labels:
+    {{- include "gtom.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "gtom.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gtom.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.service.httpPort }}
+          name: http
+        - containerPort: {{ .Values.service.healthPort }}
+          name: health
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "{{ .Values.service.httpPort }}"
+        - name: HEALTH_PORT
+          value: "{{ .Values.service.healthPort }}"
+        - name: GBRAIN_ENDPOINT
+          value: {{ .Values.config.gbrainEndpoint | quote }}
+        - name: VULNERABILITY_THRESHOLD
+          value: {{ .Values.config.vulnerabilityThreshold | quote }}
+        - name: AUTHENTICITY_THRESHOLD
+          value: {{ .Values.config.authenticityThreshold | quote }}
+        - name: ICE_ENABLED
+          value: {{ .Values.config.iceEnabled | quote }}
+        - name: INFLUENCE_TRACKING
+          value: {{ .Values.config.influenceTracking | quote }}
+        - name: LOG_LEVEL
+          value: {{ .Values.config.logLevel | quote }}
+        - name: POSTGRES_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gtom.fullname" . }}-secrets
+              key: postgres-url
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gtom.fullname" . }}-secrets
+              key: anthropic-api-key
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "gtom.fullname" . }}-secrets
+              key: openai-api-key
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: health
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+      volumes:
+      - name: data
+        emptyDir: {}
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

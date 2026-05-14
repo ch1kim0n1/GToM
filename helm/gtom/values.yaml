@@ -1,0 +1,46 @@
+# Default values for GToM
+replicaCount: 2
+
+image:
+  repository: gtom
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  httpPort: 3003
+  healthPort: 8080
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+config:
+  gbrainEndpoint: "http://gbrain:3000"
+  vulnerabilityThreshold: "0.7"
+  authenticityThreshold: "0.8"
+  iceEnabled: "true"
+  influenceTracking: "true"
+  logLevel: "info"
+
+secrets:
+  postgresUrl: "postgres://gtom:gtom_password@postgres:5432/gstack"
+  anthropicApiKey: "your-anthropic-api-key-here"
+  openaiApiKey: "your-openai-api-key-here"

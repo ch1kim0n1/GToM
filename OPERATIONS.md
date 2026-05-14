@@ -13,6 +13,94 @@ npm run build
 npm link
 ```
 
+### Deployment Methods
+
+#### Docker Compose
+```bash
+# Build and start with Docker Compose
+docker-compose up -d gtom
+
+# View logs
+docker-compose logs -f gtom
+
+# Stop
+docker-compose down
+```
+
+#### Kubernetes with Helm
+```bash
+# Add Helm repository (if applicable)
+# helm repo add gstack https://...
+
+# Install chart
+helm install gtom ./helm/gtom --namespace gstack --create-namespace
+
+# Upgrade
+helm upgrade gtom ./helm/gtom --namespace gstack
+
+# Rollback
+helm rollback gtom --namespace gstack
+
+# Uninstall
+helm uninstall gtom --namespace gstack
+```
+
+#### Systemd (Bare Metal)
+```bash
+# Create user and directories
+sudo useradd -r -s /bin/false gtom
+sudo mkdir -p /opt/gtom /var/lib/gtom /var/log/gtom /etc/gtom
+sudo chown -R gtom:gtom /opt/gtom /var/lib/gtom /var/log/gtom
+
+# Copy files
+sudo cp -r dist/* /opt/gtom/
+sudo cp deploy/systemd/gtom.service /etc/systemd/system/
+sudo cp .env.example /etc/gtom/gtom.env
+# Edit /etc/gtom/gtom.env with actual values
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable gtom
+sudo systemctl start gtom
+
+# Check status
+sudo systemctl status gtom
+sudo journalctl -u gtom -f
+```
+
+### Rollback Procedures
+
+#### Kubernetes
+```bash
+# View revision history
+helm history gtom --namespace gstack
+
+# Rollback to previous version
+helm rollback gtom --namespace gstack
+
+# Rollback to specific revision
+helm rollback gtom <revision> --namespace gstack
+```
+
+#### Docker Compose
+```bash
+# Rebuild with previous image tag
+docker-compose down
+docker-compose up -d --build gtom
+```
+
+#### Systemd
+```bash
+# Stop service
+sudo systemctl stop gtom
+
+# Restore previous build
+sudo cp -r /opt/gtom.backup/* /opt/gtom/
+
+# Restart
+sudo systemctl start gtom
+```
+
 ### Configuration
 Create `~/.gtom/config.json`:
 
@@ -53,6 +141,25 @@ gtom mcp
 ```bash
 gtom health
 ```
+
+### Service Level Objectives (SLOs)
+
+#### P95 Latency
+- Assess operation: 500ms
+- Health check: 100ms
+
+#### Error Rate
+- Assess operation: < 1% (5xx errors)
+- Health check: < 0.1%
+
+#### Uptime
+- Monthly: 99.5%
+- Quarterly: 99.9%
+
+#### Alert Thresholds
+- P95 latency > 1s for 5 minutes
+- Error rate > 5% for 5 minutes
+- Health check failure for 1 minute
 
 Checks:
 - GBrain connectivity

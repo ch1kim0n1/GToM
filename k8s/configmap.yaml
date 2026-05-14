@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gtom-config
+  labels:
+    app: gtom
+    component: gstack
+data:
+  gbrain-endpoint: "http://gbrain:3000"
+  vulnerability-threshold: "0.7"
+  authenticity-threshold: "0.8"
+  ice-enabled: "true"
+  influence-tracking: "true"
+  log-level: "info"

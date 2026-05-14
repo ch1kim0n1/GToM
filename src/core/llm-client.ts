@@ -12,7 +12,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
-import { createLogger } from '../../shared/src/core/structured-logger.js';
+import { createLogger } from '../../../shared/src/core/structured-logger.js';
+
+const logger = createLogger('gtom-llm-client');
 
 export interface ModelPricing {
   /** USD per 1M input tokens. */
@@ -246,7 +248,7 @@ export class LLMClient {
     for (const tier of tiersToTry) {
       try {
         const model = this.getModelByTier(tier);
-        console.log(`[GToM LLMClient] Using ${tier}: ${model}`);
+        logger.info(`Using ${tier}: ${model}`);
 
         const result = await this.call(prompt, {
           model,
@@ -256,7 +258,7 @@ export class LLMClient {
 
         return result;
       } catch (error) {
-        console.warn(`[GToM LLMClient] ${tier} failed:`, error);
+        logger.warn(`${tier} failed`, { error });
         lastError = error;
         continue;
       }
@@ -454,72 +456,6 @@ export class LLMClient {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  /**
-   * Call Anthropic API
-   */
-  private async callAnthropic(
-    prompt: string,
-    model: string,
-    maxTokens: number,
-    temperature: number
-  ): Promise<string> {
-    if (!this.anthropicClient) {
-      throw new Error('Anthropic client not initialized');
-    }
-
-    return this.retryWithBackoff(async () => {
-      const message = await this.anthropicClient!.messages.create({
-        model,
-        max_tokens: maxTokens,
-        temperature,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
-
-      // Extract text content from response
-      const textContent = message.content
-        .filter((block): block is { type: 'text'; text: string } => block.type === 'text')
-        .map(block => block.text)
-        .join('\n');
-
-      return textContent;
-    }, `Anthropic API call (model: ${model})`);
-  }
-
-  /**
-   * Call OpenAI API
-   */
-  private async callOpenAI(
-    prompt: string,
-    model: string,
-    maxTokens: number,
-    temperature: number
-  ): Promise<string> {
-    if (!this.openaiClient) {
-      throw new Error('OpenAI client not initialized');
-    }
-
-    return this.retryWithBackoff(async () => {
-      const completion = await this.openaiClient!.chat.completions.create({
-        model,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        max_tokens: maxTokens,
-        temperature,
-      });
-
-      return completion.choices[0]?.message?.content || '';
-    }, `OpenAI API call (model: ${model})`);
   }
 
   /**
