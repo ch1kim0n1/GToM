@@ -13,7 +13,7 @@ import { HealthServer, type HealthCheckResult, type ReadinessCheckResult } from 
 
 const port = parseInt(process.env.PORT || '3003', 10);
 const healthPort = process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT, 10) : 8080;
-const gbrainEndpoint = process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
+const gbrainEndpoint = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
 const logger = new StructuredLogger('gtom-serve');
 
 async function main() {
@@ -23,6 +23,8 @@ async function main() {
 
   const gtom = new GToM({
     gbrainEndpoint,
+    gbrainAuthToken: process.env.GTOM_GBRAIN_AUTH_TOKEN || process.env.GBRAIN_AUTH_TOKEN,
+    gbrainMode: process.env.GTOM_GBRAIN_MODE === 'mcp' ? 'mcp' : 'http',
   });
 
   const server = new GToMServer(gtom, port);

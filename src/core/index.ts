@@ -7,6 +7,18 @@ export { SQLiteEngine } from './sqlite-engine.js';
 export { createEngine, createDefaultEngine } from './engine-factory.js';
 export { Migrator, createMigrator } from './migrate.js';
 export { createBackup, restoreBackup, exportPersistenceSnapshot, getPersistenceRoots } from './persistence-tools.js';
+export { GBrainClient, emptyCognitiveResponse } from './gbrain-client.js';
+export type {
+  GBrainClientConfig,
+  GBrainIntegrationMode,
+  GBrainMCPClient,
+  GBrainOperationResult,
+  GBrainHealth,
+  GBrainPageInput,
+  GBrainWhoKnowsQuery,
+  GBrainWhoKnowsResult,
+  CircuitBreakerState,
+} from './gbrain-client.js';
 export {
   Observability,
   MetricsRegistry,

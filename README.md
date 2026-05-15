@@ -105,6 +105,12 @@ See [docs/MCP_CONTRACT.md](docs/MCP_CONTRACT.md) for the tool list, auth scopes,
 | `GTOM_RECEIPT_HMAC_SECRET` | HMAC secret for signed receipts. |
 | `GTOM_RECEIPT_POSTGRES_URL` | Optional durable receipt mirror. |
 | `GTOM_POSTGRES_READ_REPLICA_URL` | Optional Postgres read replica. |
+| `GTOM_GBRAIN_ENDPOINT` | GBrain HTTP endpoint. Falls back to `GBRAIN_ENDPOINT` or `http://localhost:3000`. |
+| `GTOM_GBRAIN_AUTH_TOKEN` | Bearer token for GBrain HTTP requests. Falls back to `GBRAIN_AUTH_TOKEN`. |
+| `GTOM_GBRAIN_MODE` | `http` or `mcp` integration mode for GBrain. |
+| `GTOM_GBRAIN_TIMEOUT_MS` | Per-call timeout for GBrain requests. |
+| `GTOM_GBRAIN_MAX_RETRIES` | Retry count for transient GBrain failures. |
+| `GTOM_GBRAIN_CIRCUIT_FAILURE_THRESHOLD` | Failure count before opening the GBrain circuit breaker. |
 | `GTOM_HEALTH_WEBHOOK_URL` | Webhook called when health drops below healthy. |
 | `GTOM_MCP_AUTH_REQUIRED` | Require MCP token auth when set to `true`. |
 | `GTOM_MCP_READ_TOKEN` | Read-scope MCP token. |

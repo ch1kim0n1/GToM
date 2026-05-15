@@ -56,9 +56,20 @@ Configure an MCP client to launch the GToM MCP server. Enable token auth in shar
 ```ts
 import { GToM } from 'gtom';
 
-const gtom = new GToM({ gbrainEndpoint: 'http://localhost:3000' });
+const gtom = new GToM({
+  gbrainEndpoint: process.env.GTOM_GBRAIN_ENDPOINT,
+  gbrainAuthToken: process.env.GTOM_GBRAIN_AUTH_TOKEN,
+  gbrainMode: 'http',
+});
 const score = await gtom.scoreDecisionAuthenticity({
   context: 'User is choosing a plan',
   action: 'Buy annual plan',
+  userId: 'user-123',
 });
 ```
+
+## GBrain Integration
+
+GToM uses a typed GBrain client for `/health`, `/cognitive/query`, `/pages`, and `/whoknows/:userId`. Every call has a timeout, transient retry with backoff, Zod response validation, bearer-token auth, and circuit-breaker protection. If GBrain is unavailable, GToM degrades to local context instead of failing decision scoring or observation ingestion.
+
+Set `GTOM_GBRAIN_MODE=mcp` and provide a `gbrainMcpClient` when embedding GToM in a process that should call GBrain MCP tools instead of HTTP.

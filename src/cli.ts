@@ -18,6 +18,7 @@ import {
 } from './core/persistence-tools.js';
 
 const program = new Command();
+const DEFAULT_GBRAIN_ENDPOINT = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
 
 async function fileExists(filePath: string): Promise<boolean> {
   try {
@@ -229,7 +230,7 @@ program
   .requiredOption('-c, --content <text>', 'Observation content')
   .option('-s, --surface <name>', 'Surface name', 'ui')
   .option('--source <type>', 'Source type (user_input, agent_action, system_event, external_signal)', 'user_input')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
@@ -309,7 +310,7 @@ program
   .description('Score decision authenticity')
   .requiredOption('-c, --context <text>', 'Decision context')
   .requiredOption('-a, --action <text>', 'Decision action')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
@@ -389,7 +390,7 @@ program
 program
   .command('audit')
   .description('Perform self-audit on agent behavior')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
@@ -454,7 +455,7 @@ program
 program
   .command('vulnerabilities')
   .description('Get current vulnerability state')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
@@ -489,7 +490,7 @@ program
 program
   .command('health')
   .description('Check health of GToM and dependencies')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
@@ -533,7 +534,7 @@ const evalCommand = program
   .description('Run evaluation on a test corpus')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--cycles <number>', 'Number of cycles to run', '1')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('-o, --output <path>', 'Write output to file (JSON format)')
   .option('--json', 'Output as JSON')
@@ -710,7 +711,7 @@ program
   .option('--against <receipt>', 'Baseline receipt path')
   .option('--current <receipt>', 'Current receipt path (defaults to latest local receipt)')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--tolerance <number>', 'Tolerance for regression detection', '0.05')
@@ -832,7 +833,7 @@ program
   .description('Show vulnerability trend data over a time window')
   .option('--window <days>', 'Number of days to analyse', '7')
   .option('--category <name>', 'Filter to a specific vulnerability category (e.g. scarcity_fear, authority_bias)')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
@@ -917,7 +918,7 @@ program
 program
   .command('drift')
   .description('Check for vulnerability drift over time')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--window <duration>', 'Window to analyze (for example 7d, 24h, 60m)', '7d')
   .option('--cohort <name>', 'Filter drift output to a specific cohort')
   .option('--cycles <number>', 'Number of cycles to run', '1')
@@ -1018,7 +1019,7 @@ program
 program
   .command('decay')
   .description('Show vulnerability decay rates')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--window <hours>', 'Time window in hours', '24')
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')
@@ -1061,7 +1062,7 @@ program
 program
   .command('reset')
   .description('Reset vulnerability state to baseline')
-  .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--gbrain <url>', 'GBrain endpoint', DEFAULT_GBRAIN_ENDPOINT)
   .option('--confirm', 'Confirm reset without prompt')
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--budget-usd <number>', 'Maximum LLM budget for this command')

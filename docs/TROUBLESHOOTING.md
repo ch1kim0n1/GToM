@@ -3,6 +3,7 @@
 ## `gtom health` Reports Unhealthy
 
 - `gbrain`: check `--gbrain`, DNS, port, and `/health`.
+- If `gbrain` is degraded but the rest of GToM is healthy, inspect `GTOM_GBRAIN_ENDPOINT`, `GTOM_GBRAIN_AUTH_TOKEN`, `GTOM_GBRAIN_TIMEOUT_MS`, and the circuit state in the health details. GToM keeps running with local context while the GBrain circuit is open.
 - `llm_api`: verify `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; local fallback is degraded but usable.
 - `sync_freshness`: run an eval or score command to emit a fresh receipt.
 - `schema_version`: inspect `gtom/test/baselines/schema.json`.

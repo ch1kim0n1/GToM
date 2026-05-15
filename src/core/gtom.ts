@@ -23,6 +23,11 @@ import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import type { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 import { LLMClient } from './llm-client.js';
 import { globalObservability, type ShellJobAuditEntry } from './observability.js';
+import {
+  GBrainClient,
+  type GBrainClientConfig,
+  type GBrainMCPClient,
+} from './gbrain-client.js';
 
 type GToMHealthStatus = 'healthy' | 'degraded' | 'unhealthy';
 
@@ -70,6 +75,7 @@ export class GToM {
   private cognitiveICE: CognitiveICE;
   private conflictPredictor: ConflictPredictor;
   private gbrainEndpoint: string;
+  private gbrainClient: GBrainClient;
   private receiptRegistry: ReceiptRegistry;
   private driftDetector: DriftDetector;
   private budgetLedger: BudgetLedger;
@@ -88,6 +94,11 @@ export class GToM {
 
   constructor(config: {
     gbrainEndpoint?: string;
+    gbrainAuthToken?: string;
+    gbrainMode?: GBrainClientConfig['mode'];
+    gbrainClient?: GBrainClient;
+    gbrainMcpClient?: GBrainMCPClient;
+    gbrainTimeoutMs?: number;
     healthCheckTimeoutMs?: number;
     syncFreshnessMaxMs?: number;
     receiptRegistryOptions?: ReceiptRegistryOptions;
@@ -97,10 +108,21 @@ export class GToM {
       sandbox?: HealthProbe;
     };
   } = {}) {
-    this.gbrainEndpoint = config.gbrainEndpoint || 'http://localhost:3000';
+    this.gbrainEndpoint = config.gbrainEndpoint
+      ?? process.env.GTOM_GBRAIN_ENDPOINT
+      ?? process.env.GBRAIN_ENDPOINT
+      ?? 'http://localhost:3000';
     this.healthCheckTimeoutMs = config.healthCheckTimeoutMs ?? Number(process.env.GTOM_HEALTH_TIMEOUT_MS ?? 2500);
     this.syncFreshnessMaxMs = config.syncFreshnessMaxMs ?? Number(process.env.GTOM_SYNC_FRESHNESS_MAX_MS ?? 7 * 24 * 60 * 60 * 1000);
     this.healthProbes = config.healthProbes ?? {};
+    this.gbrainClient = config.gbrainClient ?? new GBrainClient({
+      endpoint: this.gbrainEndpoint,
+      authToken: config.gbrainAuthToken,
+      mode: config.gbrainMode,
+      mcpClient: config.gbrainMcpClient,
+      timeoutMs: config.gbrainTimeoutMs ?? this.healthCheckTimeoutMs,
+    });
+    this.gbrainEndpoint = this.gbrainClient.getEndpoint();
 
     this.budgetLedger = new BudgetLedger({
       maxBudgetUsd: Number(process.env.GTOM_MAX_BUDGET_USD ?? 20),
@@ -144,10 +166,20 @@ export class GToM {
     content: string;
     surface: string;
     source: InfluenceEvent['source'];
+    userId?: string;
   }): Promise<void> {
-    return this.observability.timeAsync('ingestObservation', async () => {
+    return this.observability.timeAsync('ingestObservation', async (span) => {
       const start = performance.now();
-      await this.vulnerabilityManager.processObservation(observation);
+      const gbrainContext = await this.loadGBrainContext({
+        queryType: 'biases',
+        context: observation.content,
+        userId: observation.userId,
+        traceId: span.trace_id,
+      });
+      await this.vulnerabilityManager.processObservation({
+        ...observation,
+        gbrainContext,
+      });
       this.latencyTracker.record(performance.now() - start);
     }, { surface: observation.surface, source: observation.source });
   }
@@ -179,6 +211,7 @@ export class GToM {
   async scoreDecisionAuthenticity(decision: {
     context: string;
     action: string;
+    userId?: string;
   }): Promise<AuthenticityScore> {
     return this.observability.timeAsync('scoreDecisionAuthenticity', async (span) => {
       const start = performance.now();
@@ -189,6 +222,13 @@ export class GToM {
         throw new Error('Budget exceeded: cannot score decision authenticity');
       }
     
+      const gbrainContext = await this.loadGBrainContext({
+        queryType: 'intentions',
+        context: `${decision.context}\n${decision.action}`,
+        userId: decision.userId,
+        traceId: span.trace_id,
+      });
+
       const result = await this.authenticityScorer.scoreDecision({
         ...decision,
         vulnerabilities: this.vulnerabilityManager.getVulnerabilities(),
@@ -201,7 +241,7 @@ export class GToM {
           decision_fatigue: 0,
           timestamp: new Date().toISOString(),
         },
-        recentInfluences: [],
+        recentInfluences: gbrainContext,
       });
       this.latencyTracker.record(performance.now() - start);
       this.observability.audit.recordDecision({
@@ -397,6 +437,22 @@ export class GToM {
     return results;
   }
 
+  async putGBrainPage(page: {
+    page_id: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<boolean> {
+    const result = await this.gbrainClient.putPage(page);
+    return result.available && result.value.stored;
+  }
+
+  getGBrainStatus(): { endpoint: string; circuit: string } {
+    return {
+      endpoint: this.gbrainEndpoint,
+      circuit: this.gbrainClient.getCircuitState(),
+    };
+  }
+
   recordEvalCaptureFailure(error: string, timestamp: string = new Date().toISOString()): void {
     this.evalCaptureFailures.push({ timestamp, error });
     this.pruneEvalCaptureFailures();
@@ -471,20 +527,45 @@ export class GToM {
   private async probeGbrain(): Promise<HealthProbeOutcome> {
     const span = this.observability.tracer.startSpan('gbrain.health_probe', { boundary: 'gbrain' });
     try {
-      const result = await this.fetchProbe(`${this.gbrainEndpoint}/health`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-GToM-Trace-Id': span.trace_id,
-          traceparent: `00-${span.trace_id.replace(/-/g, '').slice(0, 32).padEnd(32, '0')}-${span.span_id.replace(/-/g, '').slice(0, 16).padEnd(16, '0')}-01`,
-        },
-      }, { endpoint: this.gbrainEndpoint, timeout_ms: this.healthCheckTimeoutMs, trace_id: span.trace_id });
+      const result = await this.gbrainClient.health(span.trace_id);
       this.observability.tracer.endSpan(span);
-      return result;
+      return {
+        healthy: result.available && result.value.healthy,
+        error: result.error,
+        score: result.available && result.value.healthy ? 1 : 0.6,
+        details: {
+          endpoint: this.gbrainEndpoint,
+          mode: result.source,
+          degraded: result.degraded,
+          circuit: result.value.circuit,
+          timeout_ms: this.healthCheckTimeoutMs,
+          trace_id: span.trace_id,
+        },
+      };
     } catch (error) {
       this.observability.tracer.endSpan(span, error);
       throw error;
     }
+  }
+
+  private async loadGBrainContext(options: {
+    queryType: 'beliefs' | 'desires' | 'intentions' | 'biases';
+    context: string;
+    userId?: string;
+    traceId?: string;
+  }): Promise<string[]> {
+    const context = await this.gbrainClient.queryCognitiveContext({
+      query_type: options.queryType,
+      context: options.context,
+    }, options.traceId);
+    const whoKnows = options.userId
+      ? await this.gbrainClient.whoKnows({
+        userId: options.userId,
+        context: options.context,
+        limit: 10,
+      }, options.traceId)
+      : undefined;
+    return this.gbrainClient.summarizeContext(context.value, whoKnows?.value);
   }
 
   private async fetchProbe(url: string, init: RequestInit, details: Record<string, unknown>): Promise<HealthProbeOutcome> {
