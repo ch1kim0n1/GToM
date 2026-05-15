@@ -1,0 +1,145 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: gstack
+      POSTGRES_USER: gstack
+      POSTGRES_PASSWORD: gstack_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gstack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+
+  gbrain:
+    image: oven/bun:1
+    working_dir: /workspace/gbrain
+    command: sh -lc "bun install && bun run dev"
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+    volumes:
+      - ../gbrain:/workspace/gbrain
+      - gbrain-data:/workspace/gbrain/.gbrain
+    ports:
+      - "3000:3000"
+
+  gstack:
+    image: oven/bun:1
+    working_dir: /workspace/gstack
+    command: sh -lc "bun install && bun run server"
+    environment:
+      NODE_ENV: development
+      PORT: "3010"
+    volumes:
+      - ../gstack:/workspace/gstack
+    ports:
+      - "3010:3010"
+
+  gorchestrator:
+    build:
+      context: ..
+      dockerfile: gorchestrator/Dockerfile
+    environment:
+      NODE_ENV: production
+      GBRAIN_ENDPOINT: http://gbrain:3000
+      GMIRROR_ENDPOINT: http://gmirror:8080
+      GTOM_ENDPOINT: http://gtom:3003
+      POSTGRES_URL: postgres://gstack:gstack_password@postgres:5432/gstack
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gbrain:
+        condition: service_started
+      gmirror:
+        condition: service_started
+      gtom:
+        condition: service_healthy
+    ports:
+      - "3001:8080"
+
+  gmirror:
+    build:
+      context: ..
+      dockerfile: gmirror/Dockerfile
+    environment:
+      NODE_ENV: production
+      POSTGRES_URL: postgres://gstack:gstack_password@postgres:5432/gstack
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3002:8080"
+
+  gtom:
+    build:
+      context: ..
+      dockerfile: GToM/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: "3003"
+      HEALTH_PORT: "8080"
+      GBRAIN_ENDPOINT: http://gbrain:3000
+      POSTGRES_URL: postgres://gstack:gstack_password@postgres:5432/gstack
+      GTOM_HTTP_RATE_LIMIT_RPM: "120"
+      GTOM_HTTP_RATE_LIMIT_RPH: "2000"
+      GTOM_TENANT_RATE_LIMIT_RPM: "600"
+      GTOM_TENANT_RATE_LIMIT_RPH: "10000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gbrain:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080/health/ready', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+    ports:
+      - "3003:3003"
+      - "8083:8080"
+
+  glearn:
+    build:
+      context: ..
+      dockerfile: glearn/Dockerfile
+    environment:
+      NODE_ENV: production
+      GBRAIN_ENDPOINT: http://gbrain:3000
+      POSTGRES_URL: postgres://gstack:gstack_password@postgres:5432/gstack
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gbrain:
+        condition: service_started
+    ports:
+      - "3005:8080"
+
+  gagent:
+    build:
+      context: ..
+      dockerfile: gagent/Dockerfile
+    environment:
+      NODE_ENV: production
+      GBRAIN_ENDPOINT: http://gbrain:3000
+      POSTGRES_URL: postgres://gstack:gstack_password@postgres:5432/gstack
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gbrain:
+        condition: service_started
+    ports:
+      - "3004:8080"
+
+volumes:
+  postgres-data:
+  redis-data:
+  gbrain-data:

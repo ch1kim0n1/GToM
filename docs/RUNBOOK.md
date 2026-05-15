@@ -1,5 +1,17 @@
 # GToM Runbook
 
+## On-Call
+
+Primary on-call owns health, quota, deployment, and rollback decisions for GToM. Escalate to the GBrain owner when `gbrain` health is degraded for more than 10 minutes, and to the platform owner when Kubernetes readiness, DNS, or service routing is the failure domain.
+
+### Page Triggers
+
+- `GET /health/ready` fails for 2 consecutive minutes.
+- Error rate exceeds 5% for 5 minutes.
+- P95 latency exceeds 1 second for 5 minutes.
+- Tenant quota rejects exceed 10% for 5 minutes.
+- Receipt schema health or sync freshness is unhealthy.
+
 ## First Response
 
 1. Run `gtom health --json`.

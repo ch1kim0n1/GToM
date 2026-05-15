@@ -45,6 +45,37 @@ helm rollback gtom --namespace gstack
 helm uninstall gtom --namespace gstack
 ```
 
+#### Rolling Upgrade
+
+```bash
+docker build -f GToM/Dockerfile -t gtom:<version> .
+helm upgrade gtom ./GToM/helm/gtom --namespace gstack --set image.tag=<version> --wait
+kubectl rollout status deployment/gtom -n gstack
+```
+
+The readiness probe returns `503` while a pod is draining, so Kubernetes stops sending new traffic before SIGTERM completes. Keep `terminationGracePeriodSeconds` greater than `GTOM_SHUTDOWN_DRAIN_TIMEOUT_MS`.
+
+#### Canary Deployment
+
+```bash
+kubectl apply -f GToM/k8s/canary.yaml -n gstack
+kubectl set image deployment/gtom-canary gtom=gtom:<candidate> -n gstack
+kubectl rollout status deployment/gtom-canary -n gstack
+```
+
+Route a small percentage of traffic to `gtom-canary`, compare `gtom_method_errors_total`, latency, and tenant quota rejects, then promote the same image tag to the primary Helm release.
+
+#### Blue/Green Deployment
+
+```bash
+kubectl apply -f GToM/k8s/blue-green.yaml -n gstack
+kubectl scale deployment/gtom-green --replicas=2 -n gstack
+kubectl set image deployment/gtom-green gtom=gtom:<candidate> -n gstack
+kubectl patch service gtom-active -n gstack -p '{"spec":{"selector":{"app":"gtom","track":"green"}}}'
+```
+
+Keep the previous color scaled until the new color has passed readiness and error-budget checks.
+
 #### Systemd (Bare Metal)
 ```bash
 # Create user and directories
@@ -80,6 +111,9 @@ helm rollback gtom --namespace gstack
 
 # Rollback to specific revision
 helm rollback gtom <revision> --namespace gstack
+
+# Blue/green immediate switchback
+kubectl patch service gtom-active -n gstack -p '{"spec":{"selector":{"app":"gtom","track":"blue"}}}'
 ```
 
 #### Docker Compose
@@ -161,6 +195,7 @@ gtom health
 - P95 latency > 1s for 5 minutes
 - Error rate > 5% for 5 minutes
 - Health check failure for 1 minute
+- Tenant quota rejects > 10% of requests for 5 minutes
 
 Checks:
 - GBrain connectivity
@@ -183,6 +218,17 @@ gtom metrics --format prometheus
 curl -s http://localhost:3003/metrics
 curl -s http://localhost:3003/metrics/otel
 ```
+
+## Per-Tenant Quotas
+
+GToM enforces both caller and tenant fixed-window quotas.
+
+- Caller quota: `GTOM_HTTP_RATE_LIMIT_RPM`, `GTOM_HTTP_RATE_LIMIT_RPH`
+- Tenant quota: `GTOM_TENANT_RATE_LIMIT_RPM`, `GTOM_TENANT_RATE_LIMIT_RPH`
+- Tenant identity headers: `X-Tenant-Id`, then `X-GStack-Tenant`, then `default`
+- Response headers: `X-Tenant-Id`, `X-Tenant-RateLimit-Remaining`, `X-Tenant-RateLimit-Reset`
+
+Tenant quota failures return HTTP `429` with `Tenant quota exceeded` and emit a `tenant_quota_exceeded` security audit event.
 
 ## Troubleshooting
 

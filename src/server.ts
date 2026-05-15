@@ -41,8 +41,12 @@ export class GToMServer {
   private shutdownHandlers: Array<() => Promise<void>> = [];
   private logger: StructuredLogger;
   private readonly rateLimiter: FixedWindowRateLimiter;
+  private readonly tenantRateLimiter: FixedWindowRateLimiter;
   private readonly corsOrigin: string;
   private readonly maxBodyBytes: number;
+  private readonly shutdownDrainTimeoutMs: number;
+  private draining = false;
+  private activeRequests = 0;
 
   constructor(gtom: GToM, port: number = 3003) {
     this.gtom = gtom;
@@ -52,8 +56,13 @@ export class GToMServer {
       parseInt(process.env.GTOM_HTTP_RATE_LIMIT_RPM ?? '120', 10),
       parseInt(process.env.GTOM_HTTP_RATE_LIMIT_RPH ?? '2000', 10),
     );
+    this.tenantRateLimiter = new FixedWindowRateLimiter(
+      parseInt(process.env.GTOM_TENANT_RATE_LIMIT_RPM ?? '600', 10),
+      parseInt(process.env.GTOM_TENANT_RATE_LIMIT_RPH ?? '10000', 10),
+    );
     this.corsOrigin = process.env.GTOM_HTTP_CORS_ORIGIN ?? '*';
     this.maxBodyBytes = parseInt(process.env.GTOM_HTTP_MAX_BODY_BYTES ?? `${1024 * 1024}`, 10);
+    this.shutdownDrainTimeoutMs = parseInt(process.env.GTOM_SHUTDOWN_DRAIN_TIMEOUT_MS ?? '25000', 10);
   }
 
   /**
@@ -90,6 +99,10 @@ export class GToMServer {
    * Handle incoming HTTP requests
    */
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    this.activeRequests++;
+    res.on('finish', () => {
+      this.activeRequests = Math.max(0, this.activeRequests - 1);
+    });
     const { method, url } = req;
     const traceId = req.headers['x-trace-id']?.toString() ?? req.headers.traceparent?.toString().split('-')[1];
     const span = globalObservability.tracer.startSpan(`http.${method ?? 'UNKNOWN'} ${url ?? '/'}`, {
@@ -116,6 +129,12 @@ export class GToMServer {
     }
 
     try {
+      if (this.draining && url !== '/health/live' && url !== '/health/ready') {
+        res.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '30' });
+        res.end(JSON.stringify({ error: 'Server is draining for shutdown' }));
+        return;
+      }
+
       const identity = this.clientIdentity(req);
       const rateLimit = this.rateLimiter.check(identity);
       res.setHeader('X-RateLimit-Remaining', String(rateLimit.remaining));
@@ -129,6 +148,23 @@ export class GToMServer {
         });
         res.writeHead(429, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Rate limit exceeded', reset_at: rateLimit.reset_at }));
+        return;
+      }
+
+      const tenantId = this.tenantIdentity(req);
+      const tenantLimit = this.tenantRateLimiter.check(tenantId);
+      res.setHeader('X-Tenant-Id', tenantId.replace(/^tenant:/, ''));
+      res.setHeader('X-Tenant-RateLimit-Remaining', String(tenantLimit.remaining));
+      res.setHeader('X-Tenant-RateLimit-Reset', tenantLimit.reset_at);
+      if (!tenantLimit.allowed) {
+        globalObservability.audit.recordSecurityEvent({
+          event_type: 'tenant_quota_exceeded',
+          actor: identity,
+          resource: url ?? '/',
+          metadata: { tenant_id: tenantId, reset_at: tenantLimit.reset_at },
+        });
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Tenant quota exceeded', reset_at: tenantLimit.reset_at }));
         return;
       }
 
@@ -270,8 +306,13 @@ export class GToMServer {
    * Handle readiness probe
    */
   private async handleReadiness(res: ServerResponse): Promise<void> {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ready', timestamp: new Date().toISOString() }));
+    const status = this.draining ? 'draining' : 'ready';
+    res.writeHead(this.draining ? 503 : 200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status,
+      active_requests: this.activeRequests,
+      timestamp: new Date().toISOString(),
+    }));
   }
 
   private async handlePrometheusMetrics(res: ServerResponse): Promise<void> {
@@ -296,6 +337,17 @@ export class GToMServer {
     return `ip:${ip}`;
   }
 
+  private tenantIdentity(req: IncomingMessage): string {
+    const tenant = req.headers['x-tenant-id']?.toString().trim()
+      || req.headers['x-gstack-tenant']?.toString().trim()
+      || 'default';
+    return `tenant:${sanitizeUserString(tenant, {
+      fieldName: 'tenant',
+      maxLength: 128,
+      allowNewlines: false,
+    })}`;
+  }
+
   /**
    * Stop the server
    */
@@ -311,6 +363,12 @@ export class GToMServer {
    */
   async shutdown(): Promise<void> {
     this.logger.info('Initiating graceful shutdown');
+    this.draining = true;
+
+    const deadline = Date.now() + this.shutdownDrainTimeoutMs;
+    while (this.activeRequests > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
 
     // Run all shutdown handlers
     for (const handler of this.shutdownHandlers) {

@@ -1,41 +1,40 @@
-# Multi-stage Dockerfile for GToM
+# Multi-stage Dockerfile for GToM.
+#
+# Build from the workspace root so the shared package imported by GToM is
+# available:
+#   docker build -f GToM/Dockerfile .
 FROM node:20-alpine AS builder
 
-WORKDIR /app
+WORKDIR /workspace/GToM
 
-# Copy package files
-COPY package*.json ./
-COPY tsconfig.json ./
+COPY GToM/package*.json ./
+COPY GToM/tsconfig.json ./
+COPY shared /workspace/shared
 
-# Install dependencies
 RUN npm ci
 
-# Copy source code
-COPY src ./src
+COPY GToM/src ./src
 
-# Build TypeScript
 RUN npm run build
 
-# Production stage
 FROM node:20-alpine AS production
 
-WORKDIR /app
+WORKDIR /workspace/GToM
+ENV NODE_ENV=production
+ENV PORT=3003
+ENV HEALTH_PORT=8080
 
-# Copy package files
-COPY package*.json ./
+COPY GToM/package*.json ./
+COPY shared /workspace/shared
 
-# Install production dependencies only
-RUN npm ci --production
+RUN npm ci --omit=dev
 
-# Copy built files from builder
-COPY --from=builder /app/dist ./dist
+COPY --from=builder /workspace/GToM/dist ./dist
 
-# Expose port
 EXPOSE 3003
+EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3003/health/live', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+  CMD node -e "require('http').get('http://localhost:8080/health/live', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)}).on('error', () => process.exit(1))"
 
-# Run the server
-CMD ["node", "dist/serve.js"]
+CMD ["node", "dist/GToM/src/serve.js"]

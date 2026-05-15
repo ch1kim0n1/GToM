@@ -1,0 +1,87 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gtom-blue
+  labels:
+    app: gtom
+    track: blue
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gtom
+      track: blue
+  template:
+    metadata:
+      labels:
+        app: gtom
+        track: blue
+    spec:
+      containers:
+      - name: gtom
+        image: gtom:blue
+        ports:
+        - containerPort: 3003
+          name: http
+        - containerPort: 8080
+          name: health
+        envFrom:
+        - configMapRef:
+            name: gtom-config
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: health
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gtom-green
+  labels:
+    app: gtom
+    track: green
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: gtom
+      track: green
+  template:
+    metadata:
+      labels:
+        app: gtom
+        track: green
+    spec:
+      containers:
+      - name: gtom
+        image: gtom:green
+        ports:
+        - containerPort: 3003
+          name: http
+        - containerPort: 8080
+          name: health
+        envFrom:
+        - configMapRef:
+            name: gtom-config
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: health
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gtom-active
+  labels:
+    app: gtom
+spec:
+  selector:
+    app: gtom
+    track: blue
+  ports:
+  - name: http
+    port: 3003
+    targetPort: http
+  - name: health
+    port: 8080
+    targetPort: health

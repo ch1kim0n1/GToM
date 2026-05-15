@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "serve": "node dist/serve.js",
+    "serve": "node dist/GToM/src/serve.js",
     "test": "jest",
     "test:integration": "node scripts/run-jest-env.js INTEGRATION=1",
     "test:watch": "jest --watch",
