@@ -28,7 +28,7 @@ describe('packaging and distribution', () => {
     expect(pkg.scripts['build:binaries']).toBe('node scripts/package-binaries.js');
     expect(read('scripts/postinstall.js')).toContain('better-sqlite3');
     expect(read('scripts/install.js')).toContain('npm');
-    expect(read('scripts/package-binaries.js')).toContain('node20-linux-x64');
+    expect(read('scripts/package-binaries.js')).toContain('node18-linux-x64');
     expect(read('.github/workflows/release.yml')).toContain('npm publish --provenance');
     expect(read('packaging/homebrew/gtom.rb')).toContain('class Gtom < Formula');
   });

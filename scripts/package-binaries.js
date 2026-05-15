@@ -5,22 +5,32 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.join(__dirname, '..');
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+const npmCli = process.env.npm_execpath;
 const outputDir = path.join(root, 'dist', 'binaries');
 const entry = path.join(root, 'dist', 'cli.js');
+const execOptions = { cwd: root, stdio: 'inherit' };
+
+function runNpm(args) {
+  if (npmCli) {
+    childProcess.execFileSync(process.execPath, [npmCli, ...args], execOptions);
+    return;
+  }
+  childProcess.execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', args, execOptions);
+}
 
 fs.mkdirSync(outputDir, { recursive: true });
-childProcess.execFileSync(npm, ['run', 'build'], { cwd: root, stdio: 'inherit' });
+runNpm(['run', 'build']);
 
-childProcess.execFileSync(npx, [
+runNpm([
+  'exec',
   '--yes',
+  '--',
   'pkg',
   entry,
   '--targets',
-  'node20-linux-x64,node20-macos-x64,node20-win-x64',
+  'node18-linux-x64,node18-macos-x64,node18-win-x64',
   '--out-path',
   outputDir,
-], { cwd: root, stdio: 'inherit' });
+], execOptions);
 
 console.log(`[gtom] binaries written to ${outputDir}`);
