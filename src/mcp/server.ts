@@ -154,6 +154,10 @@ class GToMMCPServer {
                   type: 'string',
                   description: 'End date for filtering (ISO 8601)',
                 },
+                corpusSha8: {
+                  type: 'string',
+                  description: 'Corpus SHA8 fingerprint to retrieve matching receipts',
+                },
               },
             },
           },
@@ -279,6 +283,7 @@ class GToMMCPServer {
     offset?: number;
     startDate?: string;
     endDate?: string;
+    corpusSha8?: string;
   }) {
     const receipts = await this.gtom.getReceipts(args);
     return {

@@ -1,7 +1,48 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as lockfile from 'proper-lockfile';
+import { Pool } from 'pg';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
+
+const CURRENT_SCHEMA_VERSION = 1;
+const DEFAULT_RECEIPT_TTL_DAYS = 365;
+const DEFAULT_ARCHIVE_AFTER_DAYS = 28;
+const SIGNATURE_FIELDS = new Set([
+  'receipt_signature',
+  'receipt_signed_at',
+  'receipt_expires_at',
+  'receipt_expired',
+  'signature_key_id',
+]);
+
+export interface ReceiptRegistryOptions {
+  baseDir?: string;
+  hmacSecret?: string;
+  ttlDays?: number;
+  archiveAfterDays?: number;
+  postgresUrl?: string | null;
+}
+
+export interface ReceiptDiff {
+  receipt_a: string;
+  receipt_b: string;
+  changed: boolean;
+  verdict: { from: string; to: string; changed: boolean };
+  overall_score_delta: number;
+  cost_usd_delta: number;
+  score_deltas: Record<string, number>;
+  hard_gates: { from: boolean; to: boolean; changed: boolean };
+}
+
+export interface RegressionResult {
+  baseline_receipt_id: string;
+  current_receipt_id: string;
+  tolerance: number;
+  regressed: boolean;
+  reasons: string[];
+  score_delta: number;
+}
 
 /**
  * Simple PII redaction for receipts
@@ -39,28 +80,43 @@ function redactPII(receipt: any): any {
 }
 
 export class ReceiptRegistry {
+  private static appendQueues = new Map<string, Promise<void>>();
+
   private basePath: string;
+  private baseDir: string;
   private schemaPath: string;
   private week: string;  // ISO week YYYY-Www
-  private readonly SCHEMA_VERSION = 1;
+  private readonly schemaVersion = CURRENT_SCHEMA_VERSION;
+  private readonly hmacSecret: string;
+  private readonly ttlDays: number;
+  private readonly archiveAfterDays: number;
+  private readonly initPromise: Promise<void>;
+  private readonly postgresUrl: string | null;
+  private postgresPool: Pool | null = null;
 
-  constructor(projectName: string) {
+  constructor(projectName: string, options: ReceiptRegistryOptions = {}) {
     const now = new Date();
     const year = now.getFullYear();
     const weekNum = getISOWeek(now);
     this.week = `${year}-W${String(weekNum).padStart(2, '0')}`;
-    const baseDir = path.join(process.cwd(), projectName, 'test', 'baselines');
-    this.basePath = path.join(baseDir, `receipts-${this.week}.jsonl`);
-    this.schemaPath = path.join(baseDir, `schema.json`);
+    this.baseDir = options.baseDir ?? path.join(process.cwd(), projectName, 'test', 'baselines');
+    this.basePath = path.join(this.baseDir, `receipts-${this.week}.jsonl`);
+    this.schemaPath = path.join(this.baseDir, `schema.json`);
+    this.hmacSecret = options.hmacSecret ?? process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret';
+    this.ttlDays = options.ttlDays ?? parseInt(process.env.GTOM_RECEIPT_TTL_DAYS ?? `${DEFAULT_RECEIPT_TTL_DAYS}`, 10);
+    this.archiveAfterDays = options.archiveAfterDays ?? DEFAULT_ARCHIVE_AFTER_DAYS;
+    this.postgresUrl = options.postgresUrl === undefined
+      ? process.env.GTOM_RECEIPT_POSTGRES_URL ?? null
+      : options.postgresUrl;
     
     // Initialize persistence - fail loudly if cannot create directory
-    this.initializePersistence();
+    this.initPromise = this.initializePersistence();
   }
 
   private async initializePersistence(): Promise<void> {
     try {
-      const dir = path.dirname(this.basePath);
-      await fs.mkdir(dir, { recursive: true });
+      await fs.mkdir(this.baseDir, { recursive: true });
+      await fs.open(this.basePath, 'a').then((handle) => handle.close());
       
       // Initialize schema metadata
       await this.initializeSchema();
@@ -72,8 +128,8 @@ export class ReceiptRegistry {
   private async initializeSchema(): Promise<void> {
     try {
       const existingSchema = await this.readSchema();
-      if (existingSchema && existingSchema.version !== this.SCHEMA_VERSION) {
-        console.warn(`[ReceiptRegistry] Schema version mismatch: expected ${this.SCHEMA_VERSION}, got ${existingSchema.version}. Migration may be required.`);
+      if (existingSchema && existingSchema.version !== this.schemaVersion) {
+        console.warn(`[ReceiptRegistry] Schema version mismatch: expected ${this.schemaVersion}, got ${existingSchema.version}. Migration may be required.`);
       }
       
       if (!existingSchema) {
@@ -100,49 +156,397 @@ export class ReceiptRegistry {
 
   private async writeSchema(): Promise<void> {
     const schema = {
-      version: this.SCHEMA_VERSION,
+      version: this.schemaVersion,
+      current_schema_version: this.schemaVersion,
+      migrations: [
+        {
+          from: 0,
+          to: 1,
+          description: 'Normalize legacy receipts into execution receipt schema v1 and preserve audit metadata.',
+        },
+      ],
       created_at: new Date().toISOString(),
     };
     await fs.writeFile(this.schemaPath, JSON.stringify(schema, null, 2), 'utf8');
   }
 
   async append(receipt: ExecutionReceipt): Promise<void> {
+    const previous = ReceiptRegistry.appendQueues.get(this.basePath) ?? Promise.resolve();
+    const current = previous.then(() => this.appendWithLock(receipt));
+    ReceiptRegistry.appendQueues.set(this.basePath, current.catch(() => undefined));
+    return current;
+  }
+
+  private async appendWithLock(receipt: ExecutionReceipt): Promise<void> {
+    await this.initPromise;
+    await this.archiveOldReceipts();
+
     // Apply PII redaction before writing
-    const redactedReceipt = redactPII(receipt);
+    const redactedReceipt = this.signReceipt(redactPII(receipt));
     const line = JSON.stringify(redactedReceipt) + '\n';
-    await fs.appendFile(this.basePath, line, 'utf8');
+
+    const release = await lockfile.lock(this.basePath, {
+      retries: {
+        retries: 5,
+        factor: 1.2,
+        minTimeout: 25,
+        maxTimeout: 100,
+      },
+    });
+
+    try {
+      await fs.appendFile(this.basePath, line, 'utf8');
+    } finally {
+      await release();
+    }
+
+    await this.appendDurable(redactedReceipt);
   }
 
   async getLatest(): Promise<ExecutionReceipt | null> {
-    try {
-      const content = await fs.readFile(this.basePath, 'utf8');
-      const lines = content.trim().split('\n').filter((l: string) => l);
-      if (lines.length === 0) return null;
-      return JSON.parse(lines[lines.length - 1]) as ExecutionReceipt;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-      throw error;
-    }
+    await this.initPromise;
+    const receipts = await this.readAllReceipts();
+    if (receipts.length === 0) return null;
+    return receipts.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
   }
 
   async getAllBetween(start: Date, end: Date): Promise<ExecutionReceipt[]> {
-    const receipts: ExecutionReceipt[] = [];
+    await this.initPromise;
+    const receipts = await this.readAllReceipts();
+    return receipts.filter((receipt) => {
+      const timestamp = new Date(receipt.timestamp);
+      return timestamp >= start && timestamp <= end;
+    });
+  }
+
+  async getAllSince(start: Date): Promise<ExecutionReceipt[]> {
+    return this.getAllBetween(start, new Date());
+  }
+
+  async getByCorpusSha8(corpusSha8: string): Promise<ExecutionReceipt[]> {
+    await this.initPromise;
+    const target = corpusSha8.toLowerCase();
+    const receipts = await this.readAllReceipts();
+    return receipts.filter((receipt) => {
+      const metadataSha = typeof receipt.metadata?.corpus_sha8 === 'string'
+        ? receipt.metadata.corpus_sha8.toLowerCase()
+        : '';
+      return metadataSha === target || receipt.input_hash.toLowerCase().startsWith(target);
+    });
+  }
+
+  async archiveOldReceipts(now: Date = new Date()): Promise<void> {
+    await this.initPromise;
+    const cutoff = now.getTime() - this.archiveAfterDays * 24 * 60 * 60 * 1000;
+    let content = '';
     try {
-      const content = await fs.readFile(this.basePath, 'utf8');
-      const lines = content.trim().split('\n').filter((l: string) => l);
-      for (const line of lines) {
-        const receipt = JSON.parse(line) as ExecutionReceipt;
-        const timestamp = new Date(receipt.timestamp);
-        if (timestamp >= start && timestamp <= end) {
-          receipts.push(receipt);
-        }
-      }
+      content = await fs.readFile(this.basePath, 'utf8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
       throw error;
     }
+
+    const lines = content.split('\n').filter(Boolean);
+    const keep: string[] = [];
+    const archive: string[] = [];
+
+    for (const line of lines) {
+      const receipt = this.parseReceiptLine(line);
+      if (new Date(receipt.timestamp).getTime() < cutoff) {
+        archive.push(line);
+      } else {
+        keep.push(line);
+      }
+    }
+
+    if (archive.length === 0) return;
+
+    const archiveDir = path.join(this.baseDir, 'archive');
+    await fs.mkdir(archiveDir, { recursive: true });
+    const archivePath = path.join(archiveDir, `receipts-${this.week}.jsonl`);
+
+    const release = await lockfile.lock(this.basePath, {
+      retries: { retries: 5, minTimeout: 25, maxTimeout: 100 },
+    });
+
+    try {
+      await fs.appendFile(archivePath, `${archive.join('\n')}\n`, 'utf8');
+      await fs.writeFile(this.basePath, keep.length > 0 ? `${keep.join('\n')}\n` : '', 'utf8');
+    } finally {
+      await release();
+    }
+  }
+
+  async readReceiptFile(receiptPath: string): Promise<ExecutionReceipt> {
+    await this.initPromise;
+    return readReceiptFile(receiptPath, this.hmacSecret);
+  }
+
+  private signReceipt(receipt: ExecutionReceipt): ExecutionReceipt {
+    const expiresAt = new Date(new Date(receipt.timestamp).getTime() + this.ttlDays * 24 * 60 * 60 * 1000).toISOString();
+    const enriched: ExecutionReceipt = {
+      ...receipt,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      metadata: {
+        ...receipt.metadata,
+        corpus_sha8: receipt.metadata?.corpus_sha8 ?? receipt.input_hash.substring(0, 8),
+        receipt_expires_at: expiresAt,
+        receipt_signed_at: new Date().toISOString(),
+        signature_key_id: 'gtom-hmac-v1',
+      },
+    };
+    return {
+      ...enriched,
+      metadata: {
+        ...enriched.metadata,
+        receipt_signature: signReceiptPayload(enriched, this.hmacSecret),
+      },
+    };
+  }
+
+  private parseReceiptLine(line: string): ExecutionReceipt {
+    const receipt = migrateReceipt(JSON.parse(line));
+    verifyReceiptSignature(receipt, this.hmacSecret);
+    return markExpiration(receipt);
+  }
+
+  private async readAllReceipts(): Promise<ExecutionReceipt[]> {
+    const files = await this.getReceiptFiles();
+    const receipts: ExecutionReceipt[] = [];
+
+    for (const file of files) {
+      let content = '';
+      try {
+        content = await fs.readFile(file, 'utf8');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
+      for (const line of content.split('\n').filter(Boolean)) {
+        receipts.push(this.parseReceiptLine(line));
+      }
+    }
+
     return receipts;
   }
+
+  private async getReceiptFiles(): Promise<string[]> {
+    const files: string[] = [];
+
+    async function collect(dir: string): Promise<void> {
+      try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          const entryPath = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            await collect(entryPath);
+          } else if (/^receipts-.+\.jsonl$/.test(entry.name)) {
+            files.push(entryPath);
+          }
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+
+    await collect(this.baseDir);
+    return files;
+  }
+
+  private async appendDurable(receipt: ExecutionReceipt): Promise<void> {
+    if (!this.postgresUrl) return;
+
+    if (!this.postgresPool) {
+      this.postgresPool = new Pool({
+        connectionString: this.postgresUrl,
+        connectionTimeoutMillis: 2000,
+      });
+    }
+
+    await this.postgresPool.query(`
+      CREATE TABLE IF NOT EXISTS gtom_receipts (
+        receipt_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL,
+        timestamp TIMESTAMPTZ NOT NULL,
+        corpus_sha8 TEXT NOT NULL,
+        receipt JSONB NOT NULL
+      )
+    `);
+    await this.postgresPool.query(
+      `
+        INSERT INTO gtom_receipts (receipt_id, schema_version, timestamp, corpus_sha8, receipt)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (receipt_id) DO UPDATE
+        SET receipt = EXCLUDED.receipt,
+            schema_version = EXCLUDED.schema_version,
+            timestamp = EXCLUDED.timestamp,
+            corpus_sha8 = EXCLUDED.corpus_sha8
+      `,
+      [
+        receipt.receipt_id,
+        receipt.schema_version,
+        receipt.timestamp,
+        receipt.metadata?.corpus_sha8 ?? receipt.input_hash.substring(0, 8),
+        receipt,
+      ]
+    );
+  }
+}
+
+export async function readReceiptFile(receiptPath: string, hmacSecret = process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret'): Promise<ExecutionReceipt> {
+  const content = await fs.readFile(receiptPath, 'utf8');
+  const trimmed = content.trim();
+  if (!trimmed) {
+    throw new Error(`Receipt file is empty: ${receiptPath}`);
+  }
+  const firstLine = trimmed.split('\n').filter(Boolean)[0];
+  const receipt = migrateReceipt(JSON.parse(firstLine));
+  verifyReceiptSignature(receipt, hmacSecret);
+  return markExpiration(receipt);
+}
+
+export function migrateReceipt(raw: any): ExecutionReceipt {
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('Invalid receipt payload');
+  }
+
+  const version = raw.schema_version ?? 0;
+  if (version === CURRENT_SCHEMA_VERSION) {
+    return raw as ExecutionReceipt;
+  }
+  if (version > CURRENT_SCHEMA_VERSION) {
+    throw new Error(`Unsupported receipt schema_version ${version}`);
+  }
+
+  return {
+    ...raw,
+    schema_version: CURRENT_SCHEMA_VERSION,
+    metadata: {
+      ...(raw.metadata ?? {}),
+      schema_migration: {
+        from: version,
+        to: CURRENT_SCHEMA_VERSION,
+        migrated_at: new Date().toISOString(),
+      },
+    },
+  } as ExecutionReceipt;
+}
+
+export function verifyReceiptSignature(receipt: ExecutionReceipt, hmacSecret = process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret'): boolean {
+  const signature = receipt.metadata?.receipt_signature;
+  if (!signature) {
+    return false;
+  }
+
+  const expected = signReceiptPayload(receipt, hmacSecret);
+  const actualBuffer = Buffer.from(String(signature), 'hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) {
+    throw new Error(`Receipt signature verification failed for ${receipt.receipt_id}`);
+  }
+  return true;
+}
+
+export function diffReceipts(a: ExecutionReceipt, b: ExecutionReceipt): ReceiptDiff {
+  const dimensions = new Set([...Object.keys(a.scores), ...Object.keys(b.scores)]);
+  const scoreDeltas: Record<string, number> = {};
+  for (const dimension of dimensions) {
+    scoreDeltas[dimension] = roundDelta((b.scores[dimension]?.score ?? 0) - (a.scores[dimension]?.score ?? 0));
+  }
+
+  return {
+    receipt_a: a.receipt_id,
+    receipt_b: b.receipt_id,
+    changed: a.verdict !== b.verdict ||
+      a.hard_gates_passed !== b.hard_gates_passed ||
+      a.overall_score !== b.overall_score ||
+      a.cost_usd !== b.cost_usd ||
+      Object.values(scoreDeltas).some((delta) => delta !== 0),
+    verdict: { from: a.verdict, to: b.verdict, changed: a.verdict !== b.verdict },
+    overall_score_delta: roundDelta(b.overall_score - a.overall_score),
+    cost_usd_delta: roundDelta(b.cost_usd - a.cost_usd),
+    score_deltas: scoreDeltas,
+    hard_gates: { from: a.hard_gates_passed, to: b.hard_gates_passed, changed: a.hard_gates_passed !== b.hard_gates_passed },
+  };
+}
+
+export function compareReceiptRegression(current: ExecutionReceipt, baseline: ExecutionReceipt, tolerance = 0.05): RegressionResult {
+  const reasons: string[] = [];
+  const scoreDelta = current.overall_score - baseline.overall_score;
+
+  if (scoreDelta < -Math.abs(tolerance)) {
+    reasons.push(`overall_score dropped by ${Math.abs(scoreDelta).toFixed(4)} (tolerance ${Math.abs(tolerance).toFixed(4)})`);
+  }
+  if (baseline.hard_gates_passed && !current.hard_gates_passed) {
+    reasons.push('hard gates passed in baseline but failed in current receipt');
+  }
+  if (verdictRank(current.verdict) < verdictRank(baseline.verdict)) {
+    reasons.push(`verdict regressed from ${baseline.verdict} to ${current.verdict}`);
+  }
+
+  return {
+    baseline_receipt_id: baseline.receipt_id,
+    current_receipt_id: current.receipt_id,
+    tolerance: Math.abs(tolerance),
+    regressed: reasons.length > 0,
+    reasons,
+    score_delta: roundDelta(scoreDelta),
+  };
+}
+
+function signReceiptPayload(receipt: ExecutionReceipt, hmacSecret: string): string {
+  return crypto
+    .createHmac('sha256', hmacSecret)
+    .update(stableStringify(stripSignatureMetadata(receipt)))
+    .digest('hex');
+}
+
+function stripSignatureMetadata(receipt: ExecutionReceipt): ExecutionReceipt {
+  const metadata = { ...(receipt.metadata ?? {}) };
+  for (const key of SIGNATURE_FIELDS) {
+    delete metadata[key];
+  }
+  return {
+    ...receipt,
+    metadata,
+  };
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(object[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function markExpiration(receipt: ExecutionReceipt): ExecutionReceipt {
+  const expiresAt = receipt.metadata?.receipt_expires_at;
+  if (!expiresAt) return receipt;
+  return {
+    ...receipt,
+    metadata: {
+      ...receipt.metadata,
+      receipt_expired: new Date(expiresAt).getTime() < Date.now(),
+    },
+  };
+}
+
+function verdictRank(verdict: string): number {
+  const ranks: Record<string, number> = {
+    fail: 0,
+    risky: 1,
+    pass_with_warnings: 2,
+    pass: 3,
+  };
+  return ranks[verdict] ?? 0;
+}
+
+function roundDelta(value: number): number {
+  return Math.round(value * 10000) / 10000;
 }
 
 // Helper: Get ISO week number

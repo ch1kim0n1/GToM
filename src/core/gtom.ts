@@ -330,20 +330,29 @@ export class GToM {
     offset?: number;
     startDate?: string;
     endDate?: string;
+    corpusSha8?: string;
   }): Promise<any[]> {
-    if (options?.startDate && options?.endDate) {
-      const start = new Date(options.startDate);
-      const end = new Date(options.endDate);
-      const receipts = await this.receiptRegistry.getAllBetween(start, end);
-      
-      // Apply limit and offset
-      let result = receipts;
-      if (options.offset) {
-        result = result.slice(options.offset);
+    if (options?.corpusSha8) {
+      let result = await this.receiptRegistry.getByCorpusSha8(options.corpusSha8);
+      if (options.startDate) {
+        const start = new Date(options.startDate);
+        result = result.filter((receipt) => new Date(receipt.timestamp) >= start);
       }
-      if (options.limit) {
-        result = result.slice(0, options.limit);
+      if (options.endDate) {
+        const end = new Date(options.endDate);
+        result = result.filter((receipt) => new Date(receipt.timestamp) <= end);
       }
+      if (options.offset) result = result.slice(options.offset);
+      if (options.limit) result = result.slice(0, options.limit);
+      return result;
+    }
+
+    if (options?.startDate || options?.endDate) {
+      const start = options.startDate ? new Date(options.startDate) : new Date(0);
+      const end = options.endDate ? new Date(options.endDate) : new Date();
+      let result = await this.receiptRegistry.getAllBetween(start, end);
+      if (options.offset) result = result.slice(options.offset);
+      if (options.limit) result = result.slice(0, options.limit);
       return result;
     }
     

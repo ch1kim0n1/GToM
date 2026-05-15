@@ -2,9 +2,59 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
+import * as fs from 'fs/promises';
 import { GToM } from './core/gtom.js';
+import {
+  ReceiptRegistry,
+  compareReceiptRegression,
+  diffReceipts,
+  readReceiptFile,
+} from './core/receipt-registry.js';
 
 const program = new Command();
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function loadReceipt(receiptPath: string) {
+  return readReceiptFile(receiptPath);
+}
+
+async function loadLatestReceipt(): Promise<any> {
+  const registry = new ReceiptRegistry('gtom');
+  const latest = await registry.getLatest();
+  if (!latest) {
+    throw new Error('No local receipts found');
+  }
+  return latest;
+}
+
+function printRegressionResult(result: any, quiet?: boolean, json?: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  if (quiet) return;
+
+  console.log(chalk.blue.bold('[GToM] Regression result'));
+  console.log(chalk.gray(`Baseline: ${result.baseline_receipt_id}`));
+  console.log(chalk.gray(`Current:  ${result.current_receipt_id}`));
+  console.log(chalk.gray(`Score delta: ${result.score_delta.toFixed(4)}`));
+  if (result.regressed) {
+    console.log(chalk.red('Regression detected'));
+    for (const reason of result.reasons) {
+      console.log(`  - ${reason}`);
+    }
+  } else {
+    console.log(chalk.green('No regression detected'));
+  }
+}
 
 program
   .name('gtom')
@@ -287,7 +337,7 @@ program
   });
 
 // Eval command
-program
+const evalCommand = program
   .command('eval')
   .description('Run evaluation on a test corpus')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
@@ -316,30 +366,88 @@ program
     process.exit(0);
   });
 
+evalCommand
+  .command('regress')
+  .description('Compare the latest receipt against a baseline receipt and exit 1 on regression')
+  .requiredOption('--against <receipt>', 'Baseline receipt path')
+  .option('--current <receipt>', 'Current receipt path (defaults to latest local receipt)')
+  .option('--tolerance <number>', 'Allowed score drop before regression', '0.05')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const baseline = await loadReceipt(options.against);
+      const current = options.current ? await loadReceipt(options.current) : await loadLatestReceipt();
+      const result = compareReceiptRegression(current, baseline, parseFloat(options.tolerance));
+      printRegressionResult(result, options.quiet, options.json);
+      process.exit(result.regressed ? 1 : 0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Eval regression failed:'), error);
+      process.exit(1);
+    }
+  });
+
 // Replay command
 program
   .command('replay')
-  .description('Replay a previous observation from corpus')
-  .argument('<hash>', 'Content hash to replay')
+  .description('Replay a receipt or previous observation from corpus')
+  .argument('<target>', 'Receipt path or content hash to replay')
   .option('--corpus <path>', 'Path to corpus directory', './.gbrain-corpus')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
-  .action(async (hash: string, options) => {
+  .action(async (target: string, options) => {
     try {
+      if (await fileExists(target)) {
+        const receipt = await loadReceipt(target);
+        const corpusSha8 = String(receipt.metadata?.corpus_sha8 ?? receipt.input_hash.substring(0, 8));
+        let corpusReplay: any = null;
+
+        try {
+          const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
+          const replayManager = new ReplayManager(options.corpus);
+          const result = await replayManager.retrieve(corpusSha8);
+          corpusReplay = result.found ? result : null;
+        } catch {
+          corpusReplay = null;
+        }
+
+        const output = {
+          receipt,
+          corpus_sha8: corpusSha8,
+          corpus_replay: corpusReplay,
+        };
+
+        if (options.json) {
+          console.log(JSON.stringify(output, null, 2));
+        } else if (!options.quiet) {
+          console.log(chalk.blue.bold(`[GToM] Replaying receipt: ${target}`));
+          console.log(chalk.gray(`Receipt: ${receipt.receipt_id}`));
+          console.log(chalk.gray(`Timestamp: ${receipt.timestamp}`));
+          console.log(chalk.gray(`Verdict: ${receipt.verdict}`));
+          console.log(chalk.gray(`Overall score: ${receipt.overall_score.toFixed(4)}`));
+          console.log(chalk.gray(`Corpus SHA8: ${corpusSha8}`));
+          if (corpusReplay?.content) {
+            console.log(chalk.green('\nCorpus content:'));
+            console.log(corpusReplay.content);
+          }
+        }
+        process.exit(0);
+      }
+
       const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
       const replayManager = new ReplayManager(options.corpus);
       
-      const result = await replayManager.retrieve(hash);
+      const result = await replayManager.retrieve(target);
       
       if (!result.found) {
-        console.error(chalk.red(`[GToM] Hash not found in corpus: ${hash}`));
+        console.error(chalk.red(`[GToM] Hash not found in corpus: ${target}`));
         process.exit(1);
       }
 
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (!options.quiet) {
-        console.log(chalk.blue.bold(`[GToM] Replaying hash: ${hash}`));
+        console.log(chalk.blue.bold(`[GToM] Replaying hash: ${target}`));
         console.log(chalk.gray(`Tool: ${result.metadata.tool}`));
         console.log(chalk.gray(`Timestamp: ${result.metadata.timestamp}`));
         console.log(chalk.gray(`Task: ${result.metadata.task || 'N/A'}`));
@@ -358,27 +466,104 @@ program
   .command('regress')
   .description('Compare current performance against baseline')
   .option('-b, --baseline <path>', 'Path to baseline file')
+  .option('--against <receipt>', 'Baseline receipt path')
+  .option('--current <receipt>', 'Current receipt path (defaults to latest local receipt)')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--tolerance <number>', 'Tolerance for regression detection', '0.05')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    const result = {
-      baseline: options.baseline,
-      corpus: options.corpus,
-      tolerance: parseFloat(options.tolerance),
-      status: 'not_implemented',
-      message: 'Regress not implemented in MVP',
-    };
-
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else if (!options.quiet) {
-      console.log(chalk.blue.bold('[GToM] Running regression test'));
-      console.log(chalk.yellow('Regress not implemented in MVP'));
+    try {
+      const baselinePath = options.against ?? options.baseline;
+      if (!baselinePath) {
+        console.error(chalk.red('[GToM] --against or --baseline is required'));
+        process.exit(1);
+      }
+      const baseline = await loadReceipt(baselinePath);
+      const current = options.current ? await loadReceipt(options.current) : await loadLatestReceipt();
+      const result = compareReceiptRegression(current, baseline, parseFloat(options.tolerance));
+      printRegressionResult(result, options.quiet, options.json);
+      process.exit(result.regressed ? 1 : 0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Regression test failed:'), error);
+      process.exit(1);
     }
-    process.exit(0);
+  });
+
+// Receipts command
+program
+  .command('receipts')
+  .description('List execution receipts')
+  .requiredOption('--since <date>', 'Return receipts since YYYY-MM-DD or ISO timestamp')
+  .option('--corpus-sha8 <hash>', 'Filter receipts by corpus SHA8')
+  .option('--limit <number>', 'Maximum receipts to return', '50')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      const registry = new ReceiptRegistry('gtom');
+      const start = new Date(options.since);
+      if (Number.isNaN(start.getTime())) {
+        console.error(chalk.red('[GToM] --since must be a valid date'));
+        process.exit(1);
+      }
+
+      let receipts = options.corpusSha8
+        ? await registry.getByCorpusSha8(options.corpusSha8)
+        : await registry.getAllSince(start);
+      receipts = receipts
+        .filter((receipt) => new Date(receipt.timestamp) >= start)
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, parseInt(options.limit, 10));
+
+      if (options.json) {
+        console.log(JSON.stringify(receipts, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold(`[GToM] Receipts since ${start.toISOString()}`));
+        for (const receipt of receipts) {
+          console.log(`${receipt.timestamp}  ${receipt.receipt_id}  ${receipt.verdict}  score=${receipt.overall_score.toFixed(4)}  corpus=${receipt.metadata?.corpus_sha8 ?? receipt.input_hash.substring(0, 8)}`);
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Receipt listing failed:'), error);
+      process.exit(1);
+    }
+  });
+
+// Receipt diff command
+program
+  .command('diff')
+  .description('Diff two execution receipts')
+  .argument('<receipt-a>', 'First receipt path')
+  .argument('<receipt-b>', 'Second receipt path')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (receiptA: string, receiptB: string, options) => {
+    try {
+      const a = await loadReceipt(receiptA);
+      const b = await loadReceipt(receiptB);
+      const diff = diffReceipts(a, b);
+
+      if (options.json) {
+        console.log(JSON.stringify(diff, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GToM] Receipt diff'));
+        console.log(chalk.gray(`A: ${diff.receipt_a}`));
+        console.log(chalk.gray(`B: ${diff.receipt_b}`));
+        console.log(chalk.gray(`Verdict: ${diff.verdict.from} -> ${diff.verdict.to}`));
+        console.log(chalk.gray(`Overall score delta: ${diff.overall_score_delta.toFixed(4)}`));
+        console.log(chalk.gray(`Cost delta: $${diff.cost_usd_delta.toFixed(4)}`));
+        for (const [dimension, delta] of Object.entries(diff.score_deltas)) {
+          console.log(`  ${dimension}: ${(delta as number).toFixed(4)}`);
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Receipt diff failed:'), error);
+      process.exit(1);
+    }
   });
 
 // Trend command
