@@ -106,6 +106,112 @@ function printRegressionResult(result: any, quiet?: boolean, json?: boolean): vo
   }
 }
 
+function parsePositiveInteger(value: string | number | undefined, flagName: string, defaultValue = 1): number {
+  const raw = value === undefined ? defaultValue : Number(value);
+  if (!Number.isInteger(raw) || raw <= 0) {
+    throw new Error(`${flagName} must be a positive integer`);
+  }
+  return raw;
+}
+
+function applyBudgetOption(options: any): number | undefined {
+  if (options.budgetUsd === undefined) return undefined;
+  const budgetUsd = Number(options.budgetUsd);
+  if (!Number.isFinite(budgetUsd) || budgetUsd < 0) {
+    throw new Error('--budget-usd must be a non-negative number');
+  }
+  process.env.GTOM_MAX_BUDGET_USD = String(budgetUsd);
+  return budgetUsd;
+}
+
+function createGToM(options: any): GToM {
+  applyBudgetOption(options);
+  return new GToM({
+    gbrainEndpoint: options.gbrain,
+  });
+}
+
+async function loadEvalCases(corpusPath?: string): Promise<Array<{ name: string; context: string; action: string }>> {
+  if (!corpusPath) {
+    return [
+      {
+        name: 'default-low-pressure-decision',
+        context: 'The user has time to compare options and asked for a careful, reversible choice.',
+        action: 'Proceed with the reversible implementation and preserve an audit trail.',
+      },
+    ];
+  }
+
+  const parsed = JSON.parse(await fs.readFile(corpusPath, 'utf8'));
+  const cases = Array.isArray(parsed) ? parsed : parsed.cases;
+  if (!Array.isArray(cases) || cases.length === 0) {
+    throw new Error('Eval corpus must be a non-empty array or an object with a cases array');
+  }
+
+  return cases.map((item: any, index: number) => {
+    if (!item.context || !item.action) {
+      throw new Error(`Eval case ${index + 1} must include context and action`);
+    }
+    return {
+      name: String(item.name ?? `case-${index + 1}`),
+      context: String(item.context),
+      action: String(item.action),
+    };
+  });
+}
+
+function generateCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
+  const commands = [
+    'ingest', 'score', 'audit', 'vulnerabilities', 'health', 'eval', 'replay',
+    'regress', 'receipts', 'diff', 'trend', 'drift', 'decay', 'reset', 'cost',
+    'completion',
+  ];
+  const options = [
+    '--json', '--quiet', '--cycles', '--budget-usd', '--gbrain', '--help',
+  ];
+
+  if (shell === 'fish') {
+    return [
+      'complete -c gtom -f',
+      ...commands.map((command) => `complete -c gtom -n "__fish_use_subcommand" -a "${command}"`),
+      ...options.map((option) => `complete -c gtom -l ${option.slice(2)}`),
+      '',
+    ].join('\n');
+  }
+
+  if (shell === 'zsh') {
+    return `#compdef gtom
+_gtom() {
+  local -a commands options
+  commands=(${commands.map((command) => `'${command}'`).join(' ')})
+  options=(${options.map((option) => `'${option}'`).join(' ')})
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+  else
+    _describe 'option' options
+  fi
+}
+compdef _gtom gtom
+`;
+  }
+
+  return `_gtom_completion() {
+  local cur prev commands options
+  COMPREPLY=()
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  commands="${commands.join(' ')}"
+  options="${options.join(' ')}"
+  if [[ \${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "\${commands}" -- "\${cur}") )
+  else
+    COMPREPLY=( $(compgen -W "\${options}" -- "\${cur}") )
+  fi
+}
+complete -F _gtom_completion gtom
+`;
+}
+
 program
   .name('gtom')
   .description('Cognitive defense and Theory of Mind system')
@@ -119,10 +225,12 @@ program
   .option('-s, --surface <name>', 'Surface name', 'ui')
   .option('--source <type>', 'Source type (user_input, agent_action, system_event, external_signal)', 'user_input')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    if (!options.quiet) {
+    if (!options.quiet && !options.json) {
       console.log(chalk.blue.bold('[GToM] Ingesting observation'));
     }
 
@@ -148,34 +256,39 @@ program
       process.exit(1);
     }
 
-    const gtom = new GToM({
-      gbrainEndpoint: options.gbrain,
-    });
-
     try {
-      await gtom.ingestObservation({
-        content: options.content,
-        surface: options.surface,
-        source: options.source,
-      });
+      const cycles = parsePositiveInteger(options.cycles, '--cycles');
+      const gtom = createGToM(options);
+      const runs = [];
+      for (let cycle = 1; cycle <= cycles; cycle++) {
+        await gtom.ingestObservation({
+          content: options.content,
+          surface: options.surface,
+          source: options.source,
+        });
 
-      const vuln = gtom.getAggregateVulnerability();
-      const result = {
-        content: options.content,
-        surface: options.surface,
-        source: options.source,
-        overall_vulnerability: vuln.overall,
-        trend: vuln.trend,
-      };
+        const vuln = gtom.getAggregateVulnerability();
+        runs.push({
+          cycle,
+          content: options.content,
+          surface: options.surface,
+          source: options.source,
+          overall_vulnerability: vuln.overall,
+          trend: vuln.trend,
+        });
+      }
+      const result = cycles === 1 ? runs[0] : { cycles, runs };
 
       if (options.json) {
         console.log(JSON.stringify(result, null, 2));
       } else if (!options.quiet) {
+        const latest = runs[runs.length - 1];
         console.log(chalk.green('\n[GToM] Observation ingested'));
         console.log(chalk.gray(`Content: ${options.content}`));
         console.log(chalk.gray(`Surface: ${options.surface}`));
-        console.log(chalk.gray(`Overall vulnerability: ${vuln.overall.toFixed(3)}`));
-        console.log(chalk.gray(`Trend: ${vuln.trend}`));
+        console.log(chalk.gray(`Cycles: ${cycles}`));
+        console.log(chalk.gray(`Overall vulnerability: ${latest.overall_vulnerability.toFixed(3)}`));
+        console.log(chalk.gray(`Trend: ${latest.trend}`));
       }
 
       process.exit(0);
@@ -192,10 +305,12 @@ program
   .requiredOption('-c, --context <text>', 'Decision context')
   .requiredOption('-a, --action <text>', 'Decision action')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    if (!options.quiet) {
+    if (!options.quiet && !options.json) {
       console.log(chalk.blue.bold('[GToM] Scoring decision authenticity'));
     }
 
@@ -220,20 +335,27 @@ program
       process.exit(1);
     }
 
-    const gtom = new GToM({
-      gbrainEndpoint: options.gbrain,
-    });
-
     try {
-      const score = await gtom.scoreDecisionAuthenticity({
-        context: options.context,
-        action: options.action,
-      });
+      const cycles = parsePositiveInteger(options.cycles, '--cycles');
+      const gtom = createGToM(options);
+      const scores = [];
+      for (let cycle = 1; cycle <= cycles; cycle++) {
+        scores.push({
+          cycle,
+          score: await gtom.scoreDecisionAuthenticity({
+            context: options.context,
+            action: options.action,
+          }),
+        });
+      }
+      const score = scores[scores.length - 1].score;
+      const output = cycles === 1 ? score : { cycles, scores };
 
       if (options.json) {
-        console.log(JSON.stringify(score, null, 2));
+        console.log(JSON.stringify(output, null, 2));
       } else if (!options.quiet) {
         console.log(chalk.green('\n[GToM] Scoring complete'));
+        console.log(chalk.gray(`Cycles: ${cycles}`));
         console.log(chalk.gray(`Authenticity score: ${score.authenticity_score.toFixed(3)}`));
         console.log(chalk.gray(`Confidence: ${score.confidence.toFixed(3)}`));
         console.log(chalk.bold('\nFactors:'));
@@ -263,18 +385,18 @@ program
   .command('audit')
   .description('Perform self-audit on agent behavior')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    if (!options.quiet) {
+    if (!options.quiet && !options.json) {
       console.log(chalk.blue.bold('[GToM] Performing self-audit'));
     }
 
-    const gtom = new GToM({
-      gbrainEndpoint: options.gbrain,
-    });
-
     try {
+      const cycles = parsePositiveInteger(options.cycles, '--cycles');
+      const gtom = createGToM(options);
       // Mock agent behavior for demo
       const agentBehavior = {
         recentActions: ['explained decision', 'requested consent', 'minimized data collection'],
@@ -282,12 +404,18 @@ program
         decisions: [],
       };
 
-      const audit = await gtom.performSelfAudit(agentBehavior);
+      const audits = [];
+      for (let cycle = 1; cycle <= cycles; cycle++) {
+        audits.push({ cycle, audit: await gtom.performSelfAudit(agentBehavior) });
+      }
+      const audit = audits[audits.length - 1].audit;
+      const output = cycles === 1 ? audit : { cycles, audits };
 
       if (options.json) {
-        console.log(JSON.stringify(audit, null, 2));
+        console.log(JSON.stringify(output, null, 2));
       } else if (!options.quiet) {
         console.log(chalk.green('\n[GToM] Audit complete'));
+        console.log(chalk.gray(`Cycles: ${cycles}`));
         console.log(chalk.gray(`Passed: ${audit.passed ? 'Yes' : 'No'}`));
         console.log(chalk.bold('\nScores:'));
         console.log(`  Alignment: ${audit.agent_behavior.alignment_with_user_values.toFixed(3)}`);
@@ -322,12 +450,13 @@ program
   .command('vulnerabilities')
   .description('Get current vulnerability state')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    const gtom = new GToM({
-      gbrainEndpoint: options.gbrain,
-    });
+    parsePositiveInteger(options.cycles, '--cycles');
+    const gtom = createGToM(options);
 
     const vulns = gtom.getVulnerabilities();
     const aggregate = gtom.getAggregateVulnerability();
@@ -356,24 +485,31 @@ program
   .command('health')
   .description('Check health of GToM and dependencies')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    const gtom = new GToM({
-      gbrainEndpoint: options.gbrain,
-    });
+    const cycles = parsePositiveInteger(options.cycles, '--cycles');
+    const gtom = createGToM(options);
 
-    const health = await gtom.healthCheck();
+    let health = await gtom.healthCheck();
+    const cycleResults = [{ cycle: 1, checks: health }];
+    for (let cycle = 2; cycle <= cycles; cycle++) {
+      health = await gtom.healthCheck();
+      cycleResults.push({ cycle, checks: health });
+    }
     const components = Object.fromEntries(
       health.map((check) => [check.service, check.healthy ? 'ok' : 'error'])
     ) as Record<string, 'ok' | 'error'>;
     const status = health.every((check) => check.healthy) ? 'healthy' : 'unhealthy';
 
     if (options.json) {
-      console.log(JSON.stringify({ status, components, checks: health }, null, 2));
+      console.log(JSON.stringify({ status, cycles, components, checks: health, cycle_results: cycleResults }, null, 2));
     } else if (!options.quiet) {
       console.log(chalk.bold('GToM Health Check'));
       console.log(chalk.gray(`Status: ${status}`));
+      console.log(chalk.gray(`Cycles: ${cycles}`));
       console.log('');
       console.log('Components:');
       console.log(`  Vulnerability Manager: ${components.vulnerabilityManager === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
@@ -393,27 +529,62 @@ const evalCommand = program
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('-o, --output <path>', 'Write output to file (JSON format)')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    if (!options.quiet) {
+    if (!options.quiet && !options.json) {
       console.log(chalk.blue.bold('[GToM] Running evaluation'));
     }
 
-    const result = {
-      cycles: parseInt(options.cycles),
-      corpus: options.corpus,
-      status: 'not_implemented',
-      message: 'Eval not implemented in MVP',
-    };
+    try {
+      const cycles = parsePositiveInteger(options.cycles, '--cycles');
+      const gtom = createGToM(options);
+      const cases = await loadEvalCases(options.corpus);
+      const runs = [];
+      for (let cycle = 1; cycle <= cycles; cycle++) {
+        for (const testCase of cases) {
+          const score = await gtom.scoreDecisionAuthenticity({
+            context: testCase.context,
+            action: testCase.action,
+          });
+          runs.push({
+            cycle,
+            case: testCase.name,
+            authenticity_score: score.authenticity_score,
+            confidence: score.confidence,
+            passed: score.authenticity_score >= 0.6,
+          });
+        }
+      }
 
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else if (!options.quiet) {
-      console.log(chalk.yellow('Eval not implemented in MVP'));
+      const result = {
+        status: runs.every((run) => run.passed) ? 'passed' : 'failed',
+        cycles,
+        corpus: options.corpus ?? 'built-in',
+        case_count: cases.length,
+        runs,
+        average_authenticity_score: runs.reduce((sum, run) => sum + run.authenticity_score, 0) / runs.length,
+      };
+
+      if (options.output) {
+        await fs.writeFile(options.output, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.green(`[GToM] Eval ${result.status}`));
+        console.log(chalk.gray(`Cases: ${cases.length}`));
+        console.log(chalk.gray(`Cycles: ${cycles}`));
+        console.log(chalk.gray(`Average authenticity: ${result.average_authenticity_score.toFixed(4)}`));
+      }
+      process.exit(result.status === 'passed' ? 0 : 1);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Eval failed:'), error);
+      process.exit(1);
     }
-    process.exit(0);
   });
 
 evalCommand
@@ -421,6 +592,8 @@ evalCommand
   .description('Compare the latest receipt against a baseline receipt and exit 1 on regression')
   .requiredOption('--against <receipt>', 'Baseline receipt path')
   .option('--current <receipt>', 'Current receipt path (defaults to latest local receipt)')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--tolerance <number>', 'Allowed score drop before regression', '0.05')
   .option('--dimension-tolerance <name=value...>', 'Per-dimension score tolerance, repeatable')
   .option('--cost-tolerance-usd <number>', 'Allowed absolute cost increase in USD', '0')
@@ -433,6 +606,8 @@ evalCommand
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
       const baseline = await loadReceipt(options.against);
       const current = options.current ? await loadReceipt(options.current) : await loadLatestReceipt();
       const result = compareReceiptRegression(current, baseline, await loadRegressionConfig(options));
@@ -450,10 +625,14 @@ program
   .description('Replay a receipt or previous observation from corpus')
   .argument('<target>', 'Receipt path or content hash to replay')
   .option('--corpus <path>', 'Path to corpus directory', './.gbrain-corpus')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (target: string, options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
       if (await fileExists(target)) {
         const receipt = await loadReceipt(target);
         const corpusSha8 = String(receipt.metadata?.corpus_sha8 ?? receipt.input_hash.substring(0, 8));
@@ -527,6 +706,8 @@ program
   .option('--current <receipt>', 'Current receipt path (defaults to latest local receipt)')
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--tolerance <number>', 'Tolerance for regression detection', '0.05')
   .option('--dimension-tolerance <name=value...>', 'Per-dimension score tolerance, repeatable')
   .option('--cost-tolerance-usd <number>', 'Allowed absolute cost increase in USD', '0')
@@ -539,6 +720,8 @@ program
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
       const baselinePath = options.against ?? options.baseline;
       if (!baselinePath) {
         console.error(chalk.red('[GToM] --against or --baseline is required'));
@@ -562,10 +745,14 @@ program
   .requiredOption('--since <date>', 'Return receipts since YYYY-MM-DD or ISO timestamp')
   .option('--corpus-sha8 <hash>', 'Filter receipts by corpus SHA8')
   .option('--limit <number>', 'Maximum receipts to return', '50')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
       const registry = new ReceiptRegistry('gtom');
       const start = new Date(options.since);
       if (Number.isNaN(start.getTime())) {
@@ -602,10 +789,14 @@ program
   .description('Diff two execution receipts')
   .argument('<receipt-a>', 'First receipt path')
   .argument('<receipt-b>', 'Second receipt path')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (receiptA: string, receiptB: string, options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
       const a = await loadReceipt(receiptA);
       const b = await loadReceipt(receiptB);
       const diff = diffReceipts(a, b);
@@ -637,10 +828,12 @@ program
   .option('--window <days>', 'Number of days to analyse', '7')
   .option('--category <name>', 'Filter to a specific vulnerability category (e.g. scarcity_fear, authority_bias)')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    if (!options.quiet) {
+    if (!options.quiet && !options.json) {
       console.log(chalk.blue.bold('[GToM] Analysing vulnerability trends'));
     }
 
@@ -651,9 +844,8 @@ program
     }
 
     try {
-      const gtom = new GToM({
-        gbrainEndpoint: options.gbrain,
-      });
+      parsePositiveInteger(options.cycles, '--cycles');
+      const gtom = createGToM(options);
 
       const vulns = gtom.getVulnerabilities();
       const aggregate = gtom.getAggregateVulnerability();
@@ -723,10 +915,13 @@ program
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--window <duration>', 'Window to analyze (for example 7d, 24h, 60m)', '7d')
   .option('--cohort <name>', 'Filter drift output to a specific cohort')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
       const { DriftDetector, parseWindowDuration } = await import('./core/drift-detector.js');
       const windowMs = parseWindowDuration(options.window);
       const detector = new DriftDetector({
@@ -740,9 +935,7 @@ program
       });
 
       // Get current vulnerabilities from GToM
-      const gtom = new GToM({
-        gbrainEndpoint: options.gbrain,
-      });
+      const gtom = createGToM(options);
       const vulnerabilities = gtom.getVulnerabilities();
 
       const baseValue = vulnerabilities.length > 0
@@ -822,21 +1015,41 @@ program
   .description('Show vulnerability decay rates')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--window <hours>', 'Time window in hours', '24')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    const result = {
-      window: parseInt(options.window),
-      status: 'not_implemented',
-      message: 'Decay not implemented in MVP',
-    };
+    try {
+      const cycles = parsePositiveInteger(options.cycles, '--cycles');
+      const windowHours = parsePositiveInteger(options.window, '--window');
+      const gtom = createGToM(options);
+      const runs = [];
+      for (let cycle = 1; cycle <= cycles; cycle++) {
+        gtom.decayVulnerabilities(windowHours);
+        runs.push({
+          cycle,
+          window_hours: windowHours,
+          aggregate: gtom.getAggregateVulnerability(),
+          vulnerabilities: gtom.getVulnerabilities(),
+        });
+      }
+      const result = cycles === 1 ? runs[0] : { cycles, runs };
 
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log(chalk.blue.bold('[GToM] Fetching decay rates'));
-      console.log(chalk.yellow('Decay not implemented in MVP'));
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        const latest = runs[runs.length - 1];
+        console.log(chalk.blue.bold('[GToM] Applied vulnerability decay'));
+        console.log(chalk.gray(`Window: ${windowHours} hour(s)`));
+        console.log(chalk.gray(`Cycles: ${cycles}`));
+        console.log(chalk.gray(`Overall vulnerability: ${latest.aggregate.overall.toFixed(3)}`));
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Decay failed:'), error);
+      process.exit(1);
     }
-    process.exit(0);
   });
 
 // Reset command
@@ -845,21 +1058,47 @@ program
   .description('Reset vulnerability state to baseline')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--confirm', 'Confirm reset without prompt')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
-    const result = {
-      confirmed: options.confirm,
-      status: 'not_implemented',
-      message: 'Reset not implemented in MVP',
-    };
+    try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      if (!options.confirm) {
+        const result = {
+          confirmed: false,
+          status: 'blocked',
+          message: 'Reset requires --confirm',
+        };
+        if (options.json) {
+          console.log(JSON.stringify(result, null, 2));
+        } else if (!options.quiet) {
+          console.error(chalk.red('[GToM] Reset requires --confirm'));
+        }
+        process.exit(1);
+      }
 
-    if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log(chalk.blue.bold('[GToM] Resetting vulnerability state'));
-      console.log(chalk.yellow('Reset not implemented in MVP'));
+      const gtom = createGToM(options);
+      gtom.resetVulnerabilities();
+      const result = {
+        confirmed: true,
+        status: 'reset',
+        vulnerabilities: gtom.getVulnerabilities(),
+        aggregate: gtom.getAggregateVulnerability(),
+      };
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GToM] Vulnerability state reset'));
+        console.log(chalk.gray(`Overall vulnerability: ${result.aggregate.overall.toFixed(3)}`));
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Reset failed:'), error);
+      process.exit(1);
     }
-    process.exit(0);
   });
 
 // Cost command
@@ -871,12 +1110,17 @@ program
   .option('--month', 'Show this month\'s spend')
   .option('--by-model', 'Break down by model')
   .option('--by-operation', 'Break down by operation')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
   .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      const budgetUsd = applyBudgetOption(options);
       const { BudgetLedger } = await import('./core/budget-ledger.js');
       const ledger = new BudgetLedger({
-        maxBudgetUsd: Number(process.env.GTOM_MAX_BUDGET_USD ?? 1000),
+        maxBudgetUsd: budgetUsd ?? Number(process.env.GTOM_MAX_BUDGET_USD ?? 1000),
       }, 'gtom');
 
       let spend = 0;
@@ -898,7 +1142,7 @@ program
 
       if (options.json) {
         console.log(JSON.stringify({ spend, ...breakdown }, null, 2));
-      } else {
+      } else if (!options.quiet) {
         const period = options.week ? 'this week' : options.month ? 'this month' : 'today';
         console.log(chalk.blue(`LLM Spend ${period}: $${spend.toFixed(4)}`));
         
@@ -922,6 +1166,35 @@ program
       process.exit(0);
     } catch (error) {
       console.error(chalk.red('[GToM] Cost query failed:'), error);
+      process.exit(1);
+    }
+  });
+
+// Shell completion command
+program
+  .command('completion')
+  .description('Print shell completion script')
+  .argument('[shell]', 'Shell to generate completion for (bash, zsh, fish)', 'bash')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((shell: string, options) => {
+    try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
+      if (!['bash', 'zsh', 'fish'].includes(shell)) {
+        throw new Error('shell must be one of: bash, zsh, fish');
+      }
+      const script = generateCompletionScript(shell as 'bash' | 'zsh' | 'fish');
+      if (options.json) {
+        console.log(JSON.stringify({ shell, script }, null, 2));
+      } else if (!options.quiet) {
+        console.log(script);
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Completion generation failed:'), error);
       process.exit(1);
     }
   });
