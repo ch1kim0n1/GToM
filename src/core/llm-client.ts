@@ -13,6 +13,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
 import { createLogger } from '../../../shared/src/core/structured-logger.js';
+import { BudgetLedger } from './budget-ledger.js';
 
 const logger = createLogger('gtom-llm-client');
 
@@ -42,6 +43,11 @@ export interface LLMClientConfig {
   timeoutMs?: number;
   maxRetries?: number;
   retryBaseDelayMs?: number;
+  budgetLedger?: BudgetLedger;
+  maxBudgetUsd?: number;
+  reservationTtlMs?: number;
+  resolver?: string;
+  scope?: string;
 }
 
 /** Anthropic model pricing (as of 2026-05-01) */
@@ -130,13 +136,19 @@ export function estimateTokens(text: string, model: string = 'gpt-4o'): number {
  * LLM Client class
  */
 export class LLMClient {
-  private config: Required<LLMClientConfig>;
+  private config: Required<Pick<
+    LLMClientConfig,
+    'anthropicApiKey' | 'openaiApiKey' | 'defaultModel' | 'maxTokens' | 'timeoutMs' | 'maxRetries' | 'retryBaseDelayMs'
+  >>;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
   private totalCostUsd: number = 0;
   private totalTokens: number = 0;
   private callCount: number = 0;
   private logger = createLogger('gtom');
+  private budgetLedger: BudgetLedger;
+  private resolver: string;
+  private scope: string;
 
   constructor(config: LLMClientConfig = {}) {
     this.config = {
@@ -148,6 +160,15 @@ export class LLMClient {
       anthropicApiKey: config.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '',
       openaiApiKey: config.openaiApiKey || process.env.OPENAI_API_KEY || '',
     };
+    this.budgetLedger = config.budgetLedger ?? new BudgetLedger({
+      maxBudgetUsd: config.maxBudgetUsd ?? Number(process.env.GTOM_MAX_BUDGET_USD ?? 20),
+      defaultTtlMs: config.reservationTtlMs,
+      resolverCapsUsd: this.parseCaps(process.env.GTOM_RESOLVER_CAPS_USD),
+      scopeCapsUsd: this.parseCaps(process.env.GTOM_SCOPE_CAPS_USD),
+    }, 'gtom');
+    this.totalCostUsd = this.budgetLedger.getTotalSpendUsd();
+    this.resolver = config.resolver ?? 'llm';
+    this.scope = config.scope ?? 'default';
 
     if (this.config.anthropicApiKey) {
       this.anthropicClient = new Anthropic({
@@ -179,32 +200,53 @@ export class LLMClient {
     const maxTokens = options.maxTokens || this.config.maxTokens || 4096;
     const temperature = options.temperature ?? 0.7;
     const startTime = Date.now();
+    const estimatedInputTokens = estimateTokens(prompt, model);
+    const estimatedCost = estimateCostUsd(model, estimatedInputTokens, maxTokens);
+    const reservation = this.budgetLedger.reserve('llm.call', estimatedCost, {
+      ttlMs: this.config.timeoutMs + 60_000,
+      resolver: this.resolver,
+      scope: this.scope,
+      metadata: { model, maxTokens, temperature },
+    });
 
     let content: string;
     let inputTokens: number;
     let outputTokens: number;
 
-    if (this.anthropicClient && this.isAnthropicModel(model)) {
-      const result = await this.callAnthropic(prompt, model, maxTokens, temperature);
-      content = result.content;
-      inputTokens = result.inputTokens;
-      outputTokens = result.outputTokens;
-    } else if (this.openaiClient && this.isOpenAIModel(model)) {
-      const result = await this.callOpenAI(prompt, model, maxTokens, temperature);
-      content = result.content;
-      inputTokens = result.inputTokens;
-      outputTokens = result.outputTokens;
-    } else {
-      throw new Error(`No API client available for model: ${model}`);
+    try {
+      if (this.anthropicClient && this.isAnthropicModel(model)) {
+        const result = await this.callAnthropic(prompt, model, maxTokens, temperature);
+        content = result.content;
+        inputTokens = result.inputTokens;
+        outputTokens = result.outputTokens;
+      } else if (this.openaiClient && this.isOpenAIModel(model)) {
+        const result = await this.callOpenAI(prompt, model, maxTokens, temperature);
+        content = result.content;
+        inputTokens = result.inputTokens;
+        outputTokens = result.outputTokens;
+      } else {
+        throw new Error(`No API client available for model: ${model}`);
+      }
+    } catch (error) {
+      this.budgetLedger.release(reservation.id);
+      throw error;
     }
 
     if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)) {
-      inputTokens = estimateTokens(prompt, model);
+      inputTokens = estimatedInputTokens;
       outputTokens = estimateTokens(content, model);
     }
     const latency = Date.now() - startTime;
     const cost = estimateCostUsd(model, inputTokens, outputTokens);
 
+    this.budgetLedger.commit(reservation.id, cost, {
+      model_id: model,
+      input_tokens: inputTokens,
+      output_tokens: outputTokens,
+      operation: 'llm.call',
+      resolver: this.resolver,
+      scope: this.scope,
+    });
     this.totalCostUsd += cost;
     this.totalTokens += inputTokens + outputTokens;
     this.callCount++;
@@ -483,7 +525,7 @@ export class LLMClient {
    * Reset metrics
    */
   resetMetrics(): void {
-    this.totalCostUsd = 0;
+    this.totalCostUsd = this.budgetLedger.getTotalSpendUsd();
     this.totalTokens = 0;
     this.callCount = 0;
   }
@@ -493,5 +535,18 @@ export class LLMClient {
    */
   getModelByTier(tier: 'tier1' | 'tier2' | 'tier3'): string {
     return MODEL_TIERS[tier];
+  }
+
+  private parseCaps(value: string | undefined): Record<string, number> {
+    if (!value) return {};
+    const caps: Record<string, number> = {};
+    for (const segment of value.split(',')) {
+      const [key, rawAmount] = segment.split(':');
+      const amount = Number(rawAmount);
+      if (key && Number.isFinite(amount) && amount >= 0) {
+        caps[key.trim()] = amount;
+      }
+    }
+    return caps;
   }
 }

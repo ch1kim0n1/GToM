@@ -15,10 +15,11 @@ import { CognitiveICE } from './ice.js';
 import { ConflictPredictor } from './conflict-predictor.js';
 import { ReceiptRegistry } from './receipt-registry.js';
 import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
-import { CostLedger } from '../../../shared/src/core/cost-ledger.js';
+import { BudgetLedger } from './budget-ledger.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
 import { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
+import { LLMClient } from './llm-client.js';
 
 /**
  * Main GToM
@@ -40,7 +41,7 @@ export class GToM {
   private gbrainEndpoint: string;
   private receiptRegistry: ReceiptRegistry;
   private driftDetector: DriftDetector;
-  private costLedger: CostLedger;
+  private budgetLedger: BudgetLedger;
   private latencyTracker: LatencyTracker;
   private auditLogger: AuditLogger;
 
@@ -49,11 +50,23 @@ export class GToM {
   } = {}) {
     this.gbrainEndpoint = config.gbrainEndpoint || 'http://localhost:3000';
 
+    this.budgetLedger = new BudgetLedger({
+      maxBudgetUsd: Number(process.env.GTOM_MAX_BUDGET_USD ?? 20),
+      defaultTtlMs: Number(process.env.GTOM_BUDGET_TTL_MS ?? 30 * 60 * 1000),
+      resolverCapsUsd: this.parseCaps(process.env.GTOM_RESOLVER_CAPS_USD),
+      scopeCapsUsd: this.parseCaps(process.env.GTOM_SCOPE_CAPS_USD),
+    }, 'gtom');
+    const llmClient = new LLMClient({
+      budgetLedger: this.budgetLedger,
+      resolver: 'gtom',
+      scope: 'cognitive-defense',
+    });
     this.vulnerabilityManager = new VulnerabilityManager({
       gbrainEndpoint: this.gbrainEndpoint,
+      llmClient,
     });
 
-    this.authenticityScorer = new AuthenticityScorer();
+    this.authenticityScorer = new AuthenticityScorer({ llmClient });
     this.cognitiveICE = new CognitiveICE();
     this.conflictPredictor = new ConflictPredictor();
     this.receiptRegistry = new ReceiptRegistry('gtom');
@@ -61,12 +74,6 @@ export class GToM {
       window_size: 100,
       drift_threshold: 0.2,
       alert_threshold: 0.3,
-    });
-    this.costLedger = new CostLedger({
-      budget_usd_per_hour: 20.0,
-      max_reserve_usd: 5.0,
-      auto_commit: false,
-      persistence_enabled: true,
     });
     this.latencyTracker = new LatencyTracker(1000);
     this.auditLogger = new AuditLogger('gtom');
@@ -123,8 +130,8 @@ export class GToM {
     const start = performance.now();
     
     // Check budget before execution
-    const budget = this.costLedger.getBudget();
-    if (budget.available_usd < 0) {
+    const budget = this.budgetLedger.getStatus();
+    if (budget.remaining_budget_usd < 0) {
       throw new Error('Budget exceeded: cannot score decision authenticity');
     }
     
@@ -157,8 +164,8 @@ export class GToM {
     const start = performance.now();
     
     // Check budget before execution
-    const budget = this.costLedger.getBudget();
-    if (budget.available_usd < 0) {
+    const budget = this.budgetLedger.getStatus();
+    if (budget.remaining_budget_usd < 0) {
       throw new Error('Budget exceeded: cannot perform self-audit');
     }
     
@@ -172,8 +179,8 @@ export class GToM {
    */
   async predictConflict(request: ConflictPredictionRequest): Promise<ConflictPredictionResponse> {
     const start = performance.now();
-    const budget = this.costLedger.getBudget();
-    if (budget.available_usd < 0) {
+    const budget = this.budgetLedger.getStatus();
+    if (budget.remaining_budget_usd < 0) {
       throw new Error('Budget exceeded: cannot predict conflicts');
     }
     const result = this.conflictPredictor.predictConflicts(request);
@@ -375,7 +382,7 @@ export class GToM {
    * Get cost statistics
    */
   getCostStats() {
-    return this.costLedger.getStatistics();
+    return this.budgetLedger.getSummary();
   }
 
   /**
@@ -389,5 +396,18 @@ export class GToM {
       trend: 'stable',
       last_updated: new Date().toISOString(),
     };
+  }
+
+  private parseCaps(value: string | undefined): Record<string, number> {
+    if (!value) return {};
+    const caps: Record<string, number> = {};
+    for (const segment of value.split(',')) {
+      const [key, rawAmount] = segment.split(':');
+      const amount = Number(rawAmount);
+      if (key && Number.isFinite(amount) && amount >= 0) {
+        caps[key.trim()] = amount;
+      }
+    }
+    return caps;
   }
 }

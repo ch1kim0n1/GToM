@@ -617,9 +617,10 @@ program
   .option('--json', 'Output as JSON')
   .action(async (options) => {
     try {
-      const { BudgetLedger } = await import('../../shared/src/core/budget-ledger.js');
-      const ledger = new BudgetLedger({ max_budget_usd: 1000 }, 'gtom');
-      await ledger.init();
+      const { BudgetLedger } = await import('./core/budget-ledger.js');
+      const ledger = new BudgetLedger({
+        maxBudgetUsd: Number(process.env.GTOM_MAX_BUDGET_USD ?? 1000),
+      }, 'gtom');
 
       let spend = 0;
       if (options.week) {
@@ -635,7 +636,7 @@ program
         breakdown['by_model'] = ledger.getSpendByModel();
       }
       if (options.byOperation) {
-        breakdown['by_operation'] = ledger.getSpendByModel();
+        breakdown['by_operation'] = ledger.getSpendByOperation();
       }
 
       if (options.json) {
@@ -653,7 +654,7 @@ program
         }
         
         if (options.byOperation) {
-          const byOp = ledger.getSpendByModel();
+          const byOp = ledger.getSpendByOperation();
           console.log(chalk.gray('\nBy operation:'));
           for (const [op, cost] of Object.entries(byOp)) {
             console.log(`  ${op}: $${(cost as number).toFixed(4)}`);
