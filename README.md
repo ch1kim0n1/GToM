@@ -105,6 +105,7 @@ See [docs/MCP_CONTRACT.md](docs/MCP_CONTRACT.md) for the tool list, auth scopes,
 - [Operations](OPERATIONS.md)
 - [Testing](TESTING.md)
 - [Versioning](docs/VERSIONING.md)
+- [Cross-tool integration](docs/CROSS_TOOL_INTEGRATION.md)
 - [Runbook](docs/RUNBOOK.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security model](docs/SECURITY_MODEL.md)

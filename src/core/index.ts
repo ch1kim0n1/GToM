@@ -46,6 +46,18 @@ export type { AccessScope, PermissionRole, AccessPrincipal, RateLimitResult } fr
 export { sanitizeIdentifier, sanitizeJsonValue, sanitizePath, sanitizeUrl, sanitizeUserString } from './input-sanitizer.js';
 export type { SanitizeStringOptions } from './input-sanitizer.js';
 export {
+  CrossToolServiceDiscovery,
+  InProcessCrossToolEventBus,
+  runCrossToolTask,
+} from './cross-tool-integration.js';
+export type {
+  CrossToolEvent,
+  CrossToolTaskResult,
+  GStackToolName,
+  ServiceDescriptor,
+  ServiceStatus,
+} from './cross-tool-integration.js';
+export {
   API_STABILITY,
   CURRENT_RECEIPT_SCHEMA_VERSION,
   GTOM_PACKAGE_VERSION,
