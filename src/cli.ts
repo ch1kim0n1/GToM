@@ -11,6 +11,11 @@ import {
   diffReceipts,
   readReceiptFile,
 } from './core/receipt-registry.js';
+import {
+  createBackup,
+  exportPersistenceSnapshot,
+  restoreBackup,
+} from './core/persistence-tools.js';
 
 const program = new Command();
 
@@ -164,7 +169,7 @@ function generateCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const commands = [
     'ingest', 'score', 'audit', 'vulnerabilities', 'health', 'eval', 'replay',
     'regress', 'receipts', 'diff', 'trend', 'drift', 'decay', 'reset', 'cost',
-    'completion',
+    'backup', 'restore', 'export', 'completion',
   ];
   const options = [
     '--json', '--quiet', '--cycles', '--budget-usd', '--gbrain', '--help',
@@ -1166,6 +1171,101 @@ program
       process.exit(0);
     } catch (error) {
       console.error(chalk.red('[GToM] Cost query failed:'), error);
+      process.exit(1);
+    }
+  });
+
+// Backup command
+program
+  .command('backup')
+  .description('Create a persistence backup')
+  .option('-o, --output-dir <path>', 'Backup output directory')
+  .option('--source-dir <path>', 'Backup a specific persistence directory')
+  .option('--rotate <number>', 'Number of backups to keep', '10')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
+      const rotateKeep = parsePositiveInteger(options.rotate, '--rotate');
+      const result = await createBackup({
+        outputDir: options.outputDir,
+        sourceDir: options.sourceDir,
+        rotateKeep,
+      });
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GToM] Backup complete'));
+        console.log(chalk.gray(`Backup: ${result.backup_dir}`));
+        console.log(chalk.gray(`Roots copied: ${result.roots.filter((root) => root.exists).length}`));
+        if (result.rotation_removed.length > 0) {
+          console.log(chalk.gray(`Rotated backups: ${result.rotation_removed.length}`));
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Backup failed:'), error);
+      process.exit(1);
+    }
+  });
+
+// Restore command
+program
+  .command('restore')
+  .description('Restore a persistence backup')
+  .requiredOption('--backup-dir <path>', 'Backup directory to restore')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
+      const result = await restoreBackup({ backupDir: options.backupDir });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet) {
+        console.log(chalk.blue.bold('[GToM] Restore complete'));
+        for (const item of result.restored) {
+          console.log(chalk.gray(`${item.name}: ${item.target}`));
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Restore failed:'), error);
+      process.exit(1);
+    }
+  });
+
+// Export command
+program
+  .command('export')
+  .description('Export persistence data')
+  .option('--format <format>', 'Export format (json)', 'json')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action(async (options) => {
+    try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
+      if (options.format !== 'json') {
+        throw new Error('--format must be json');
+      }
+      const snapshot = await exportPersistenceSnapshot();
+      if (options.json || !options.quiet) {
+        console.log(JSON.stringify(snapshot, null, 2));
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Export failed:'), error);
       process.exit(1);
     }
   });

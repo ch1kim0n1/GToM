@@ -7,6 +7,7 @@ import { BrainEngine, EngineConfig, QueryOptions, QueryResult, DatabaseStats } f
 
 export class PostgreSQLEngine implements BrainEngine {
   private pool: Pool | null = null;
+  private readPool: Pool | null = null;
   private config: EngineConfig;
   private connectionCount = 0;
   private startTime = Date.now();
@@ -19,23 +20,38 @@ export class PostgreSQLEngine implements BrainEngine {
 
   async initialize(): Promise<void> {
     const connectionString = this.config.connectionString || 'postgresql://localhost:5432/gtom';
+    const readConnectionString = this.config.readConnectionString || process.env.GTOM_POSTGRES_READ_REPLICA_URL;
     this.pool = new Pool({
       connectionString,
-      max: 20,
+      max: this.config.maxConnections ?? 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
     });
     this.connectionCount++;
+    if (readConnectionString && readConnectionString !== connectionString) {
+      this.readPool = new Pool({
+        connectionString: readConnectionString,
+        max: this.config.maxConnections ?? 20,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 2000,
+      });
+      this.connectionCount++;
+    }
   }
 
   async close(): Promise<void> {
     if (this.client) {
-      await this.client.release();
+      this.client.release();
       this.client = null;
     }
     if (this.pool) {
       await this.pool.end();
       this.pool = null;
+      this.connectionCount--;
+    }
+    if (this.readPool) {
+      await this.readPool.end();
+      this.readPool = null;
       this.connectionCount--;
     }
   }
@@ -44,10 +60,14 @@ export class PostgreSQLEngine implements BrainEngine {
     if (!this.pool) {
       throw new Error('Database not initialized');
     }
-    const client = this.client || await this.pool.connect();
+    if (options?.transaction && !this.inTransaction) {
+      return this.runInTransaction((client) => this.queryWithClient<T>(client, sql, params));
+    }
+
+    const pool = this.shouldUseReadPool(sql) ? this.readPool! : this.pool;
+    const client = this.client || await pool.connect();
     try {
-      const result = await client.query(sql, params);
-      return { rows: result.rows as T[], rowCount: result.rowCount || 0 };
+      return await this.queryWithClient<T>(client, sql, params);
     } finally {
       if (!this.client) {
         client.release();
@@ -59,6 +79,13 @@ export class PostgreSQLEngine implements BrainEngine {
     if (!this.pool) {
       throw new Error('Database not initialized');
     }
+    if (options?.transaction && !this.inTransaction) {
+      return this.runInTransaction(async (client) => {
+        const result = await client.query(sql, params);
+        return result.rowCount || 0;
+      });
+    }
+
     const client = this.client || await this.pool.connect();
     try {
       const result = await client.query(sql, params);
@@ -107,6 +134,11 @@ export class PostgreSQLEngine implements BrainEngine {
       const client = await this.pool.connect();
       await client.query('SELECT 1');
       client.release();
+      if (this.readPool) {
+        const readClient = await this.readPool.connect();
+        await readClient.query('SELECT 1');
+        readClient.release();
+      }
       return true;
     } catch {
       return false;
@@ -141,19 +173,42 @@ export class PostgreSQLEngine implements BrainEngine {
   }
 
   async migrate(): Promise<void> {
-    if (this.pool) {
-      const client = await this.pool.connect();
-      try {
-        await client.query(`
-          CREATE TABLE IF NOT EXISTS migrations (
-            version INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-          )
-        `);
-      } finally {
-        client.release();
-      }
+    if (!this.pool) {
+      return;
+    }
+    await this.execute(`
+      CREATE TABLE IF NOT EXISTS migrations (
+        version INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  }
+
+  private shouldUseReadPool(sql: string): boolean {
+    return Boolean(this.readPool && !this.inTransaction && /^\s*select\b/i.test(sql));
+  }
+
+  private async queryWithClient<T>(client: PoolClient, sql: string, params: unknown[]): Promise<QueryResult<T>> {
+    const result = await client.query(sql, params);
+    return { rows: result.rows as T[], rowCount: result.rowCount || 0 };
+  }
+
+  private async runInTransaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    if (!this.pool) {
+      throw new Error('Database not initialized');
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await operation(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
   }
 }

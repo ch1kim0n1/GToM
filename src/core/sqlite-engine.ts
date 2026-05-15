@@ -11,6 +11,7 @@ export class SQLiteEngine implements BrainEngine {
   private connectionCount = 0;
   private startTime = Date.now();
   private inTransaction = false;
+  private fallbackReason: string | null = null;
 
   constructor(config: EngineConfig) {
     this.config = config;
@@ -18,7 +19,15 @@ export class SQLiteEngine implements BrainEngine {
 
   async initialize(): Promise<void> {
     const dbPath = this.config.dbPath || ':memory:';
-    this.db = new Database(dbPath);
+    try {
+      this.db = new Database(dbPath);
+    } catch (error) {
+      if (!this.config.fallbackToMemory) {
+        throw error;
+      }
+      this.fallbackReason = `Failed to open ${dbPath}: ${(error as Error).message}`;
+      this.db = new Database(':memory:');
+    }
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
     this.connectionCount++;
@@ -36,6 +45,9 @@ export class SQLiteEngine implements BrainEngine {
     if (!this.db) {
       throw new Error('Database not initialized');
     }
+    if (options?.transaction && !this.inTransaction) {
+      return this.runInTransaction(() => this.query<T>(sql, params));
+    }
     const stmt = this.db.prepare(sql);
     const result = stmt.all(...params) as T[];
     return { rows: result, rowCount: result.length };
@@ -44,6 +56,13 @@ export class SQLiteEngine implements BrainEngine {
   async execute(sql: string, params: unknown[] = [], options?: QueryOptions): Promise<number> {
     if (!this.db) {
       throw new Error('Database not initialized');
+    }
+    if (options?.transaction && !this.inTransaction) {
+      return this.runInTransaction(() => this.execute(sql, params));
+    }
+    if (params.length === 0 && hasMultipleStatements(sql)) {
+      this.db.exec(sql);
+      return 0;
     }
     const stmt = this.db.prepare(sql);
     const result = stmt.run(...params);
@@ -115,4 +134,31 @@ export class SQLiteEngine implements BrainEngine {
       `);
     }
   }
+
+  getFallbackReason(): string | null {
+    return this.fallbackReason;
+  }
+
+  private runInTransaction<T>(operation: () => T): T {
+    if (!this.db) {
+      throw new Error('Database not initialized');
+    }
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      const result = operation();
+      this.db.exec('COMMIT');
+      return result;
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+}
+
+function hasMultipleStatements(sql: string): boolean {
+  const statements = sql
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+  return statements.length > 1;
 }
