@@ -45,6 +45,23 @@ export { FixedWindowRateLimiter, PermissionManager, hashToken, hasRequiredScopes
 export type { AccessScope, PermissionRole, AccessPrincipal, RateLimitResult } from './security.js';
 export { sanitizeIdentifier, sanitizeJsonValue, sanitizePath, sanitizeUrl, sanitizeUserString } from './input-sanitizer.js';
 export type { SanitizeStringOptions } from './input-sanitizer.js';
+export {
+  BackpressureController,
+  CancellationToken,
+  LRUCache,
+  ProgressReporter,
+  MODEL_RESOLUTION_CHAIN_8,
+  captureMemoryProfile,
+  resolveModelFromChain,
+} from './performance.js';
+export type {
+  GToMOperationOptions,
+  MemoryProfileSnapshot,
+  ModelResolutionRequest,
+  ModelResolutionTier,
+  ProgressEvent,
+  ProgressHandler,
+} from './performance.js';
 
 export { VulnerabilityRegistry } from './vulnerability-registry.js';
 export type { Vulnerability } from './vulnerability-registry.js';

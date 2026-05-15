@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-05-15T00:00:00.000Z",
+  "iterations": 20,
+  "benchmarks": {
+    "score_decision": {
+      "p95_ms": 250,
+      "avg_ms": 120,
+      "ops_per_sec": 8
+    },
+    "predict_conflict": {
+      "p95_ms": 100,
+      "avg_ms": 50,
+      "ops_per_sec": 20
+    }
+  },
+  "notes": "Baseline budgets are conservative local thresholds for regression tracking. Refresh intentionally with npm run benchmark after reviewing latest.json."
+}

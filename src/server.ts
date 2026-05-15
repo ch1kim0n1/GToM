@@ -13,6 +13,7 @@ import { StructuredLogger } from '../../shared/src/observability/structured-logg
 import { globalObservability } from './core/observability';
 import { sanitizeJsonValue, sanitizeUserString } from './core/input-sanitizer';
 import { FixedWindowRateLimiter, hashToken } from './core/security';
+import { CancellationToken } from './core/performance';
 
 export interface ConflictPredictionRequest {
   task: string;
@@ -133,6 +134,8 @@ export class GToMServer {
 
       if (url === '/gtom/predict-conflicts' && method === 'POST') {
         await this.handlePredictConflicts(req, res);
+      } else if (url === '/gtom/predict-conflicts/stream' && method === 'POST') {
+        await this.handlePredictConflictsStream(req, res);
       } else if (url === '/health/live' && method === 'GET') {
         await this.handleLiveness(res);
       } else if (url === '/health/ready' && method === 'GET') {
@@ -161,6 +164,46 @@ export class GToMServer {
    * Handle predict-conflicts request
    */
   private async handlePredictConflicts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const request = await this.readConflictPredictionRequest(req, res);
+    if (!request) return;
+    const result = await this.gtom.predictConflict({
+      task: request.task,
+      active_attempts: request.active_attempts,
+    });
+
+    const response = this.toConflictPredictionResponse(request.task, result);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(response));
+  }
+
+  private async handlePredictConflictsStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const request = await this.readConflictPredictionRequest(req, res);
+    if (!request) return;
+    const cancellationToken = new CancellationToken();
+    req.on('close', () => cancellationToken.cancel('HTTP client disconnected'));
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.write(`event: progress\ndata: ${JSON.stringify({ stage: 'accepted', percent: 1 })}\n\n`);
+    const result = await this.gtom.predictConflict({
+      task: request.task,
+      active_attempts: request.active_attempts,
+    }, {
+      cancellationToken,
+      onProgress: (event) => {
+        res.write(`event: progress\ndata: ${JSON.stringify(event)}\n\n`);
+      },
+    });
+    res.write(`event: result\ndata: ${JSON.stringify(this.toConflictPredictionResponse(request.task, result))}\n\n`);
+    res.end();
+  }
+
+  private async readConflictPredictionRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<{ task: string; active_attempts: any[] } | null> {
     const bufferModule = await import('node:buffer');
     const buffers: Buffer[] = [];
     let bytesRead = 0;
@@ -175,7 +218,7 @@ export class GToMServer {
         });
         res.writeHead(413, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Request body too large' }));
-        return;
+        return null;
       }
       buffers.push(buffer);
     }
@@ -189,11 +232,13 @@ export class GToMServer {
       maxLength: 10_000,
       allowNewlines: true,
     });
-    const result = await this.gtom.predictConflict({
+    return {
       task,
       active_attempts: Array.isArray(request.active_attempts) ? request.active_attempts as any : [],
-    });
+    };
+  }
 
+  private toConflictPredictionResponse(task: string, result: any): Record<string, unknown> {
     // Derive summary fields from the predicted_conflicts list.
     const conflicts = result.predicted_conflicts;
     const maxSeverity = conflicts.reduce((m: number, c: { severity: number }) => Math.max(m, c.severity), 0);
@@ -210,9 +255,7 @@ export class GToMServer {
       confidence: avgConfidence,
       timestamp: new Date().toISOString(),
     };
-
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(response));
+    return response;
   }
 
   /**

@@ -28,6 +28,15 @@ import {
   type GBrainClientConfig,
   type GBrainMCPClient,
 } from './gbrain-client.js';
+import {
+  BackpressureController,
+  CancellationToken,
+  LRUCache,
+  ProgressReporter,
+  captureMemoryProfile,
+  type GToMOperationOptions,
+} from './performance.js';
+import { hashString } from './utils.js';
 
 type GToMHealthStatus = 'healthy' | 'degraded' | 'unhealthy';
 
@@ -86,6 +95,8 @@ export class GToM {
   private lastHealthStatus: GToMHealthStatus | null = null;
   private readonly healthCheckTimeoutMs: number;
   private readonly syncFreshnessMaxMs: number;
+  private readonly contextCache: LRUCache<string, string[]>;
+  private readonly backpressure: BackpressureController;
   private readonly healthProbes: {
     llm?: HealthProbe;
     gbrain?: HealthProbe;
@@ -101,6 +112,10 @@ export class GToM {
     gbrainTimeoutMs?: number;
     healthCheckTimeoutMs?: number;
     syncFreshnessMaxMs?: number;
+    cacheTtlMs?: number;
+    cacheMaxEntries?: number;
+    maxConcurrentOperations?: number;
+    maxQueuedOperations?: number;
     receiptRegistryOptions?: ReceiptRegistryOptions;
     healthProbes?: {
       llm?: HealthProbe;
@@ -114,6 +129,14 @@ export class GToM {
       ?? 'http://localhost:3000';
     this.healthCheckTimeoutMs = config.healthCheckTimeoutMs ?? Number(process.env.GTOM_HEALTH_TIMEOUT_MS ?? 2500);
     this.syncFreshnessMaxMs = config.syncFreshnessMaxMs ?? Number(process.env.GTOM_SYNC_FRESHNESS_MAX_MS ?? 7 * 24 * 60 * 60 * 1000);
+    this.contextCache = new LRUCache<string, string[]>(
+      config.cacheMaxEntries ?? Number(process.env.GTOM_CACHE_MAX_ENTRIES ?? 256),
+      config.cacheTtlMs ?? Number(process.env.GTOM_CACHE_TTL_MS ?? 5 * 60 * 1000),
+    );
+    this.backpressure = new BackpressureController(
+      config.maxConcurrentOperations ?? Number(process.env.GTOM_MAX_CONCURRENT_OPERATIONS ?? 8),
+      config.maxQueuedOperations ?? Number(process.env.GTOM_MAX_QUEUED_OPERATIONS ?? 64),
+    );
     this.healthProbes = config.healthProbes ?? {};
     this.gbrainClient = config.gbrainClient ?? new GBrainClient({
       endpoint: this.gbrainEndpoint,
@@ -159,6 +182,15 @@ export class GToM {
     return this.latencyTracker.getMetrics();
   }
 
+  getPerformanceStats(): Record<string, unknown> {
+    return {
+      latency: this.getLatencyMetrics(),
+      cache: this.contextCache.stats(),
+      backpressure: this.backpressure.getStats(),
+      memory: captureMemoryProfile(),
+    };
+  }
+
   /**
    * Ingest an observation and update cognitive state
    */
@@ -167,21 +199,33 @@ export class GToM {
     surface: string;
     source: InfluenceEvent['source'];
     userId?: string;
-  }): Promise<void> {
-    return this.observability.timeAsync('ingestObservation', async (span) => {
+  }, options: GToMOperationOptions = {}): Promise<void> {
+    const release = await this.backpressure.acquire({ cancellationToken: options.cancellationToken });
+    const progress = new ProgressReporter('ingestObservation', options.onProgress);
+    try {
+      options.cancellationToken?.throwIfCancelled();
+      progress.report('started', 5);
+      return await this.observability.timeAsync('ingestObservation', async (span) => {
       const start = performance.now();
       const gbrainContext = await this.loadGBrainContext({
         queryType: 'biases',
         context: observation.content,
         userId: observation.userId,
         traceId: span.trace_id,
-      });
+      }, options);
+      progress.report('context_loaded', 45);
+      options.cancellationToken?.throwIfCancelled();
       await this.vulnerabilityManager.processObservation({
         ...observation,
         gbrainContext,
       });
+      progress.report('state_updated', 90);
       this.latencyTracker.record(performance.now() - start);
-    }, { surface: observation.surface, source: observation.source });
+      progress.report('completed', 100);
+      }, { surface: observation.surface, source: observation.source });
+    } finally {
+      release();
+    }
   }
 
   /**
@@ -212,8 +256,13 @@ export class GToM {
     context: string;
     action: string;
     userId?: string;
-  }): Promise<AuthenticityScore> {
-    return this.observability.timeAsync('scoreDecisionAuthenticity', async (span) => {
+  }, options: GToMOperationOptions = {}): Promise<AuthenticityScore> {
+    const release = await this.backpressure.acquire({ cancellationToken: options.cancellationToken });
+    const progress = new ProgressReporter('scoreDecisionAuthenticity', options.onProgress);
+    try {
+      options.cancellationToken?.throwIfCancelled();
+      progress.report('started', 5);
+      return await this.observability.timeAsync('scoreDecisionAuthenticity', async (span) => {
       const start = performance.now();
     
       // Check budget before execution
@@ -221,13 +270,16 @@ export class GToM {
       if (budget.remaining_budget_usd < 0) {
         throw new Error('Budget exceeded: cannot score decision authenticity');
       }
+      progress.report('budget_checked', 20);
     
       const gbrainContext = await this.loadGBrainContext({
         queryType: 'intentions',
         context: `${decision.context}\n${decision.action}`,
         userId: decision.userId,
         traceId: span.trace_id,
-      });
+      }, options);
+      progress.report('context_loaded', 45);
+      options.cancellationToken?.throwIfCancelled();
 
       const result = await this.authenticityScorer.scoreDecision({
         ...decision,
@@ -243,6 +295,7 @@ export class GToM {
         },
         recentInfluences: gbrainContext,
       });
+      progress.report('scored', 80);
       this.latencyTracker.record(performance.now() - start);
       this.observability.audit.recordDecision({
         operation: 'scoreDecisionAuthenticity',
@@ -253,8 +306,12 @@ export class GToM {
         span_id: span.span_id,
         metadata: { confidence: result.confidence },
       });
+      progress.report('completed', 100);
       return result;
-    });
+      });
+    } finally {
+      release();
+    }
   }
 
   /**
@@ -264,8 +321,13 @@ export class GToM {
     recentActions: string[];
     userInteractions: string[];
     decisions: any[];
-  }): Promise<SelfAuditResult> {
-    return this.observability.timeAsync('performSelfAudit', async (span) => {
+  }, options: GToMOperationOptions = {}): Promise<SelfAuditResult> {
+    const release = await this.backpressure.acquire({ cancellationToken: options.cancellationToken });
+    const progress = new ProgressReporter('performSelfAudit', options.onProgress);
+    try {
+      options.cancellationToken?.throwIfCancelled();
+      progress.report('started', 5);
+      return await this.observability.timeAsync('performSelfAudit', async (span) => {
       const start = performance.now();
     
       // Check budget before execution
@@ -273,8 +335,11 @@ export class GToM {
       if (budget.remaining_budget_usd < 0) {
         throw new Error('Budget exceeded: cannot perform self-audit');
       }
+      progress.report('budget_checked', 25);
+      options.cancellationToken?.throwIfCancelled();
     
       const result = await this.cognitiveICE.performSelfAudit(agentBehavior);
+      progress.report('audited', 80);
       this.latencyTracker.record(performance.now() - start);
       this.observability.audit.recordDecision({
         operation: 'performSelfAudit',
@@ -283,21 +348,33 @@ export class GToM {
         span_id: span.span_id,
         metadata: { concerns: result.concerns.length },
       });
+      progress.report('completed', 100);
       return result;
-    });
+      });
+    } finally {
+      release();
+    }
   }
 
   /**
    * Predict conflict for GOrchestrator escalation
    */
-  async predictConflict(request: ConflictPredictionRequest): Promise<ConflictPredictionResponse> {
-    return this.observability.timeAsync('predictConflict', async (span) => {
+  async predictConflict(request: ConflictPredictionRequest, options: GToMOperationOptions = {}): Promise<ConflictPredictionResponse> {
+    const release = await this.backpressure.acquire({ cancellationToken: options.cancellationToken });
+    const progress = new ProgressReporter('predictConflict', options.onProgress);
+    try {
+      options.cancellationToken?.throwIfCancelled();
+      progress.report('started', 5);
+      return await this.observability.timeAsync('predictConflict', async (span) => {
       const start = performance.now();
       const budget = this.budgetLedger.getStatus();
       if (budget.remaining_budget_usd < 0) {
         throw new Error('Budget exceeded: cannot predict conflicts');
       }
+      progress.report('budget_checked', 25);
+      options.cancellationToken?.throwIfCancelled();
       const result = await this.conflictPredictor.predictConflicts(request);
+      progress.report('predicted', 85);
       this.latencyTracker.record(performance.now() - start);
       this.observability.audit.recordDecision({
         operation: 'predictConflict',
@@ -306,13 +383,17 @@ export class GToM {
         span_id: span.span_id,
         metadata: { predicted_conflicts: result.predicted_conflicts.length },
       });
+      progress.report('completed', 100);
       return result;
-    });
+      });
+    } finally {
+      release();
+    }
   }
 
   /** Alias kept for backward compatibility with existing tests and callers. */
-  async predictConflicts(request: ConflictPredictionRequest): Promise<ConflictPredictionResponse> {
-    return this.predictConflict(request);
+  async predictConflicts(request: ConflictPredictionRequest, options: GToMOperationOptions = {}): Promise<ConflictPredictionResponse> {
+    return this.predictConflict(request, options);
   }
 
   /**
@@ -553,11 +634,22 @@ export class GToM {
     context: string;
     userId?: string;
     traceId?: string;
-  }): Promise<string[]> {
+  }, operationOptions: GToMOperationOptions = {}): Promise<string[]> {
+    operationOptions.cancellationToken?.throwIfCancelled();
+    const cacheKey = `${options.queryType}:${options.userId ?? 'anonymous'}:${hashString(options.context)}`;
+    if (!operationOptions.bypassCache) {
+      const cached = this.contextCache.get(cacheKey);
+      if (cached) {
+        this.observability.metrics.incrementCounter('gtom_gbrain_context_cache_hits_total');
+        return cached;
+      }
+    }
+    this.observability.metrics.incrementCounter('gtom_gbrain_context_cache_misses_total');
     const context = await this.gbrainClient.queryCognitiveContext({
       query_type: options.queryType,
       context: options.context,
     }, options.traceId);
+    operationOptions.cancellationToken?.throwIfCancelled();
     const whoKnows = options.userId
       ? await this.gbrainClient.whoKnows({
         userId: options.userId,
@@ -565,7 +657,9 @@ export class GToM {
         limit: 10,
       }, options.traceId)
       : undefined;
-    return this.gbrainClient.summarizeContext(context.value, whoKnows?.value);
+    const summary = this.gbrainClient.summarizeContext(context.value, whoKnows?.value);
+    this.contextCache.set(cacheKey, summary);
+    return summary;
   }
 
   private async fetchProbe(url: string, init: RequestInit, details: Record<string, unknown>): Promise<HealthProbeOutcome> {

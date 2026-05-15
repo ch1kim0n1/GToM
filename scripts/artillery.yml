@@ -1,0 +1,19 @@
+config:
+  target: "http://localhost:3003"
+  phases:
+    - duration: 30
+      arrivalRate: 5
+  ensure:
+    p95: 500
+    maxErrorRate: 1
+scenarios:
+  - name: predict-conflicts
+    flow:
+      - post:
+          url: "/gtom/predict-conflicts"
+          json:
+            task:
+              raw_description: "artillery conflict prediction"
+            active_attempts: []
+          expect:
+            - statusCode: 200

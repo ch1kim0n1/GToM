@@ -16,6 +16,11 @@ import { createLogger } from '../../../shared/src/core/structured-logger.js';
 import { BudgetLedger } from './budget-ledger.js';
 import { globalObservability } from './observability.js';
 import { defaultSecretManager } from './secret-manager.js';
+import {
+  MODEL_RESOLUTION_CHAIN_8,
+  resolveModelFromChain,
+  type ModelResolutionTier,
+} from './performance.js';
 
 const logger = createLogger('gtom-llm-client');
 
@@ -79,9 +84,16 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
 /** Model tier configurations */
 export const MODEL_TIERS = {
   tier1: 'claude-haiku-4-5-20251001',
-  tier2: 'claude-sonnet-4-6',
-  tier3: 'claude-opus-4-7',
+  tier2: 'gpt-4o-mini',
+  tier3: 'claude-sonnet-4-6',
+  tier4: 'gpt-4o',
+  tier5: 'claude-opus-4-7',
+  tier6: 'gpt-4-turbo',
+  tier7: 'claude-3-5-sonnet-20241022',
+  tier8: 'claude-opus-4-6',
 };
+
+export const MODEL_RESOLUTION_CHAIN = MODEL_RESOLUTION_CHAIN_8;
 
 /**
  * Estimate cost for a model call
@@ -198,7 +210,8 @@ export class LLMClient {
       temperature?: number;
     } = {}
   ): Promise<LLMCallResult> {
-    const model = options.model || this.config.defaultModel || 'claude-sonnet-4-6';
+    const selected = this.selectModel(prompt, options.model);
+    const model = selected.model_id;
     const maxTokens = options.maxTokens || this.config.maxTokens || 4096;
     const temperature = options.temperature ?? 0.7;
     const startTime = Date.now();
@@ -539,7 +552,7 @@ export class LLMClient {
   /**
    * Get model by tier
    */
-  getModelByTier(tier: 'tier1' | 'tier2' | 'tier3'): string {
+  getModelByTier(tier: keyof typeof MODEL_TIERS): string {
     return MODEL_TIERS[tier];
   }
 
@@ -554,5 +567,37 @@ export class LLMClient {
       }
     }
     return caps;
+  }
+
+  private selectModel(prompt: string, preferredModel?: string): ModelResolutionTier {
+    if (preferredModel) {
+      return {
+        tier: 0,
+        name: 'explicit',
+        model_id: preferredModel,
+        provider: this.isOpenAIModel(preferredModel) ? 'openai' : 'anthropic',
+        max_input_tokens: Number.MAX_SAFE_INTEGER,
+        use_case: 'explicit caller override',
+      };
+    }
+    const availableProviders: Array<'anthropic' | 'openai'> = [];
+    if (this.anthropicClient) availableProviders.push('anthropic');
+    if (this.openaiClient) availableProviders.push('openai');
+    if (availableProviders.length === 0) {
+      return {
+        tier: 0,
+        name: 'configured-default',
+        model_id: this.config.defaultModel,
+        provider: this.isOpenAIModel(this.config.defaultModel) ? 'openai' : 'anthropic',
+        max_input_tokens: Number.MAX_SAFE_INTEGER,
+        use_case: 'configured default with no active provider',
+      };
+    }
+    return resolveModelFromChain({
+      estimatedInputTokens: estimateTokens(prompt, this.config.defaultModel),
+      preferredModel: this.config.defaultModel,
+      availableProviders,
+      allowExpensive: process.env.GTOM_ALLOW_EXPENSIVE_MODELS === 'true',
+    });
   }
 }
