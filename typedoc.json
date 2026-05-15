@@ -1,0 +1,17 @@
+{
+  "entryPoints": [
+    "src/core/index.ts",
+    "src/core/gtom.ts",
+    "src/core/migrate.ts",
+    "src/core/observability.ts",
+    "src/core/persistence-tools.ts",
+    "src/types/index.ts",
+    "src/server.ts",
+    "src/mcp/server.ts"
+  ],
+  "out": "docs/api",
+  "readme": "none",
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "hideGenerator": true
+}

@@ -1,80 +1,65 @@
 # GToM Testing Guide
 
-## Test Structure
+## Test Layout
 
-```
+```text
 test/
-├── vulnerability.test.ts   # VulnerabilityManager tests
-├── authenticity.test.ts   # AuthenticityScorer tests
-├── ice-conflict.test.ts    # ICE conflict detection tests
-└── gtom.test.ts           # GToM integration tests
+├── authenticity.test.ts
+├── authenticity.baseline.test.ts
+├── budget-ledger.test.ts
+├── drift-detector.test.ts
+├── health-check.test.ts
+├── mcp.test.ts
+├── observability.test.ts
+├── persistence.test.ts
+├── receipt-registry.test.ts
+├── vulnerability.test.ts
+└── gtom.test.ts
 ```
 
-## Running Tests
+## Run Tests
 
 ```bash
-# Run all tests
 npm test
-
-# Run in watch mode
+npm test -- --runInBand
 npm run test:watch
-
-# Run with coverage
 npm run test:coverage
-
-# Run specific test file
-npm test vulnerability.test.ts
+npm run typecheck
+npm run build
 ```
 
-## Test Categories
-
-### Unit Tests
-
-**VulnerabilityManager** (`test/vulnerability.test.ts`)
-- Initializes 10 vulnerability categories at baseline 0.5
-- Process observation on authority content raises authority_bias
-- Process observation on scarcity content raises scarcity_fear
-- GetInfluenceLedger returns recorded influence events
-- GetCurrentCognitiveState returns valid state after observation
-
-**AuthenticityScorer** (`test/authenticity.test.ts`)
-- Scores clean decision as highly authentic (> 0.6)
-- Scores manipulated decision as less authentic (< 0.7)
-- Produces score between 0 and 1 in all cases
-- Reports manipulation indicators when high-severity vulnerabilities active
-- Handles empty vulnerability arrays
-
-**ICE Conflict** (`test/ice-conflict.test.ts`)
-- Detects ICE conflicts between tools
-- Prioritizes user protection over tool efficiency
-- Generates conflict resolution proposals
-
-## Test Data Fixtures
-
-Test helpers create minimal valid objects:
-
-```typescript
-function makeVulnerability(category: Vulnerability['category'], level: number): Vulnerability { ... }
-function makeCognitiveState(overrides?: Partial<CognitiveState>): CognitiveState { ... }
-```
-
-## Coverage Goals
-
-- Core modules: > 90%
-- Behavioral tests: > 85%
-- Overall: > 85%
-
-## Adding Tests
-
-1. Create test file in `test/`
-2. Import from `@jest/globals`
-3. Use `describe`, `it`, `expect`, `beforeEach`
-4. Follow existing test patterns
-5. Add helpers for fixture creation
-
-## CI Testing
+## Quality Gates
 
 ```bash
-npm run verify    # typecheck + test
-npm run ci:local  # verify + build
+npm run check:package
+npm run check:docs
+npm run check:privacy
+npm run check:test-isolation
+npm run check:mcp-contract
+npm run check:all
+```
+
+## API Docs
+
+```bash
+npm run docs:api
+```
+
+The generated TypeDoc site is written to `docs/api/`.
+
+## Coverage Expectations
+
+- Core behavior: vulnerability, authenticity, ICE, conflict prediction.
+- Operational behavior: health, persistence, metrics, backup/restore, receipts.
+- Integration behavior: CLI smoke, MCP contract, end-to-end mocked flows.
+
+## Baselines
+
+Regression baselines live in `test/baselines/regression-baselines-v1.jsonl`. Runtime receipts are written under `gtom/test/baselines/`.
+
+Use:
+
+```bash
+gtom eval --json
+gtom regress --baseline <receipt-a> --current <receipt-b> --json
 ```

@@ -1,65 +1,40 @@
 # GToM Architecture
 
-## System Overview
+## Overview
 
-GToM (Theory of Mind) is a vulnerability detection and authenticity assessment system focused on security and trust.
+GToM is a TypeScript service with CLI, HTTP, MCP, and embeddable Node surfaces. The core object is `GToM` in `src/core/gtom.ts`.
 
-## Core Components
+## Components
 
-### VulnerabilityRegistry
-- Tracks security vulnerabilities
-- Manages vulnerability lifecycle
-- Supports severity classification
+| Component | File | Responsibility |
+| --- | --- | --- |
+| `GToM` | `src/core/gtom.ts` | Orchestrates vulnerability tracking, authenticity scoring, conflict prediction, health, drift, cost, and observability. |
+| `VulnerabilityManager` | `src/core/vulnerability.ts` | Detects influence patterns and maintains vulnerability/cognitive state. |
+| `AuthenticityScorer` | `src/core/authenticity.ts` | Scores decisions with consensus and local fallback, then emits receipts. |
+| `CognitiveICE` | `src/core/ice.ts` | Runs self-audits and user-protection checks. |
+| `ConflictPredictor` | `src/core/conflict-predictor.ts` | Predicts conflict risk between attempts. |
+| `ReceiptRegistry` | `src/core/receipt-registry.ts` | Stores signed receipts and optional Postgres mirror writes. |
+| `BudgetLedger` | `src/core/budget-ledger.ts` | Tracks LLM reservations and spend. |
+| `DriftDetector` | `src/core/drift-detector.ts` | Detects metric drift and cohort anomalies. |
+| `Observability` | `src/core/observability.ts` | Provides redacted logs, audit JSONL, metrics, and spans. |
 
-### AuthenticityRegistry
-- Manages authenticity assessments
-- Tracks content provenance
-- Provides confidence scores
+## Surfaces
 
-### ToMModel
-- Implements Theory of Mind reasoning
-- Analyzes beliefs and intentions
-- Generates ToM inferences
+- CLI: `src/cli.ts`
+- HTTP: `src/server.ts`
+- MCP: `src/mcp/server.ts`
+- Node imports: `src/core/index.ts`
 
-### VulnerabilityScanner
-- Scans code for vulnerabilities
-- Performs static analysis
-- Generates security reports
+## Persistence
 
-### AuthenticityAnalyzer
-- Analyzes content authenticity
-- Evaluates multiple authenticity factors
-- Provides comprehensive assessments
+- SQLite for local state.
+- Postgres for concurrent-writer production deployments.
+- Versioned SQL migrations in `migrations/`.
+- Receipts in weekly JSONL files.
+- Audit files under `~/.gtom/audit/`.
 
-## Database Architecture
+## Observability
 
-Engine abstraction supporting:
-- SQLite (default)
-- PostgreSQL (production)
-- In-memory (testing)
+All public methods should record throughput counters, error counters, P50/P95/P99 latency summaries, trace spans, and relevant audit records.
 
-### Schema
-- vulnerabilities: Security findings
-- authenticity_assessments: Trust evaluations
-- tom_inferences: ToM reasoning results
-- scan_results: Analysis reports
-
-## Data Flow
-
-```
-Target Selection → Vulnerability Scan → Authenticity Analysis → ToM Reasoning → Assessment Generation
-```
-
-## Security
-
-- OAuth 2.0 authentication
-- Encrypted vulnerability storage
-- Access control for sensitive data
-- Audit logging for security events
-
-## Performance
-
-- Parallel scanning
-- Caching of scan results
-- Incremental analysis
-- Optimized ToM inference
+HTTP responses include `X-Trace-Id`, and GBrain probes propagate `X-GToM-Trace-Id` plus `traceparent`.

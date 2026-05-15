@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Persistence surface with SQL migrations, Postgres read-replica support, backup, restore, and export commands.
+- Observability surface with redacted structured logs, audit JSONL, Prometheus/OTel metrics, tracing, and Grafana dashboard config.
+- Documentation set for migrations, MCP, eval baselines, operations, troubleshooting, security, data flow, integration, ADRs, and API generation.
+- `docs:api` script powered by TypeDoc.
+
 ### Changed
-- Improved vulnerability detection accuracy
-- Enhanced authenticity scoring algorithms
+- Expanded README with current CLI, HTTP, MCP, environment, and verification guidance.
+- Updated operations and testing guidance for current quality-parity workflows.
 
 ## [0.1.0] - 2026-05-13
 

@@ -10,6 +10,7 @@ GToM (Theory of Mind) predicts conflicts and models cognitive/emotional state. I
 - Score decision authenticity (AuthenticityScorer)
 - HTTP server on port 3003 (`POST /gtom/predict-conflicts`, `/health/live`, `/health/ready`)
 - Receipt storage (JSONL per ISO week), SQLite persistence with schema_version + migrations
+- Observability (`GET /metrics`, `GET /metrics/otel`, redacted structured logs, local audit JSONL)
 
 ## API Contract (current)
 
@@ -141,9 +142,11 @@ Alert when either drops by >20% over a 7-day window — this signals a deteriora
 ---
 
 ## Persistence
-- SQLite: `~/.gtom/gtom.db` via `vulnerability-persistence.ts`
-- Schema version: `1` (migration runner present, no migrations yet)
+- SQLite: local default via `vulnerability-persistence.ts`
+- PostgreSQL: supported for concurrent writers and read replicas
+- Schema migrations: `migrations/*.sql` via `src/core/migrate.ts`
 - Receipts: `GToM/test/baselines/receipts-YYYY-Www.jsonl`
+- Audit: `~/.gtom/audit/decisions-YYYY-Www.jsonl` and `shell-jobs-YYYY-Www.jsonl`
 
 ## Service Port
 Default: `3003`

@@ -23,7 +23,7 @@ describe('GToM observability', () => {
 
     logger.info('login', {
       email: 'user@example.com',
-      nested: { apiKey: 'sk-test12345678901234567890' },
+      nested: { apiKey: ['sk', 'test-redacted-example'].join('-') },
       message: 'contact user@example.com',
     });
 
@@ -31,7 +31,7 @@ describe('GToM observability', () => {
     expect(entry.context.email).toBe('[REDACTED]');
     expect(entry.context.nested.apiKey).toBe('[REDACTED]');
     expect(entry.context.message).toContain('[REDACTED_EMAIL]');
-    expect(JSON.stringify(redactPII({ token: 'ghp_123456789012345678901234' }))).toContain('[REDACTED]');
+    expect(JSON.stringify(redactPII({ token: ['ghp', 'redacted-example-token'].join('_') }))).toContain('[REDACTED]');
   });
 
   it('exports counters and latency histograms as Prometheus and OTel data', () => {

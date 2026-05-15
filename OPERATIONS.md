@@ -127,7 +127,8 @@ npm run dev
 
 ### Production Mode
 ```bash
-gtom assess --context "user context" --action "user action" --content "content"
+gtom ingest --content "Only 2 seats left" --surface checkout
+gtom score --context "user context" --action "user action"
 ```
 
 ### MCP Server Mode
@@ -172,6 +173,16 @@ Checks:
 - ICE alert frequency
 - Influence exposure rate
 - Cognitive state updates
+- `gtom_method_calls_total`
+- `gtom_method_errors_total`
+- `gtom_method_latency_ms`
+
+### Metrics Export
+```bash
+gtom metrics --format prometheus
+curl -s http://localhost:3003/metrics
+curl -s http://localhost:3003/metrics/otel
+```
 
 ## Troubleshooting
 
@@ -206,4 +217,13 @@ npm run build
 
 ## Backup
 
-Cognitive states, vulnerability histories, and influence logs are stored in GBrain. Backup GBrain according to its operational guide.
+```bash
+gtom backup --output-dir ./.gtom/backups --rotate 10 --json
+gtom export --format json --json
+```
+
+Restore:
+
+```bash
+gtom restore --backup-dir ./.gtom/backups/<backup-name> --json
+```
