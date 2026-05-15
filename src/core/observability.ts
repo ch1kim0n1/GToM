@@ -53,6 +53,18 @@ export interface DecisionAuditEntry {
   metadata?: Record<string, unknown>;
 }
 
+export interface SecurityAuditEntry {
+  event_type: string;
+  actor?: string;
+  resource?: string;
+  scopes?: string[];
+  required_scopes?: string[];
+  trace_id?: string;
+  span_id?: string;
+  timestamp?: string;
+  metadata?: Record<string, unknown>;
+}
+
 const PII_KEY_PATTERN = /(email|phone|token|secret|password|api[_-]?key|authorization|ssn|session|cookie)/i;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const TOKEN_PATTERN = /\b(?:sk|ghp|github_pat|xox[baprs])-?[A-Za-z0-9_=-]{16,}\b/g;
@@ -127,6 +139,14 @@ export class LocalAuditLogger {
 
   recordShellJob(entry: ShellJobAuditEntry): void {
     this.append(`shell-jobs-${isoWeekKey(new Date(entry.timestamp ?? Date.now()))}.jsonl`, {
+      schema_version: 1,
+      timestamp: entry.timestamp ?? new Date().toISOString(),
+      ...entry,
+    });
+  }
+
+  recordSecurityEvent(entry: SecurityAuditEntry): void {
+    this.append(`security-events-${isoWeekKey(new Date(entry.timestamp ?? Date.now()))}.jsonl`, {
       schema_version: 1,
       timestamp: entry.timestamp ?? new Date().toISOString(),
       ...entry,

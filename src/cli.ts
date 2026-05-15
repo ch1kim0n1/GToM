@@ -17,6 +17,13 @@ import {
   restoreBackup,
 } from './core/persistence-tools.js';
 import { GStackGBrainSync } from './core/gstack-gbrain-sync.js';
+import { FileSecretManager } from './core/secret-manager.js';
+import {
+  sanitizeIdentifier,
+  sanitizePath,
+  sanitizeUrl,
+  sanitizeUserString,
+} from './core/input-sanitizer.js';
 
 const program = new Command();
 const DEFAULT_GBRAIN_ENDPOINT = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
@@ -31,7 +38,7 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 async function loadReceipt(receiptPath: string) {
-  return readReceiptFile(receiptPath);
+  return readReceiptFile(sanitizePath(receiptPath, 'receipt path'));
 }
 
 async function loadLatestReceipt(): Promise<any> {
@@ -60,7 +67,7 @@ async function loadRegressionConfig(options: any): Promise<RegressionToleranceCo
   }
 
   if (options.config) {
-    const parsed = JSON.parse(await fs.readFile(options.config, 'utf8')) as RegressionToleranceConfig;
+    const parsed = JSON.parse(await fs.readFile(sanitizePath(options.config, '--config'), 'utf8')) as RegressionToleranceConfig;
     return {
       ...config,
       ...parsed,
@@ -87,7 +94,7 @@ function parseKeyValueNumbers(values: string | string[]): Record<string, number>
     if (!key || !Number.isFinite(value)) {
       throw new Error(`Invalid tolerance '${entry}'. Expected name=value.`);
     }
-    result[key] = value;
+    result[sanitizeIdentifier(key, 'tolerance name')] = value;
   }
   return result;
 }
@@ -133,6 +140,9 @@ function applyBudgetOption(options: any): number | undefined {
 
 function createGToM(options: any): GToM {
   applyBudgetOption(options);
+  if (options.gbrain) {
+    options.gbrain = sanitizeUrl(options.gbrain, '--gbrain');
+  }
   return new GToM({
     gbrainEndpoint: options.gbrain,
   });
@@ -149,7 +159,7 @@ async function loadEvalCases(corpusPath?: string): Promise<Array<{ name: string;
     ];
   }
 
-  const parsed = JSON.parse(await fs.readFile(corpusPath, 'utf8'));
+  const parsed = JSON.parse(await fs.readFile(sanitizePath(corpusPath, '--corpus'), 'utf8'));
   const cases = Array.isArray(parsed) ? parsed : parsed.cases;
   if (!Array.isArray(cases) || cases.length === 0) {
     throw new Error('Eval corpus must be a non-empty array or an object with a cases array');
@@ -171,7 +181,7 @@ function generateCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const commands = [
     'ingest', 'score', 'audit', 'vulnerabilities', 'health', 'eval', 'replay',
     'regress', 'receipts', 'diff', 'trend', 'drift', 'decay', 'reset', 'cost',
-    'metrics', 'backup', 'restore', 'export', 'completion',
+    'metrics', 'backup', 'restore', 'export', 'secrets', 'completion',
   ];
   const options = [
     '--json', '--quiet', '--cycles', '--budget-usd', '--gbrain', '--help',
@@ -241,29 +251,17 @@ program
       console.log(chalk.blue.bold('[GToM] Ingesting observation'));
     }
 
-    // Basic input validation
-    if (!options.content || typeof options.content !== 'string' || options.content.trim().length === 0) {
-      console.error(chalk.red('Error: Content must be a non-empty string'));
-      process.exit(1);
-    }
-
-    if (options.content.length > 10000) {
-      console.error(chalk.red('Error: Content too long (max 10000 characters)'));
-      process.exit(1);
-    }
-
-    if (options.content.includes('\0')) {
-      console.error(chalk.red('Error: Content contains invalid characters'));
-      process.exit(1);
-    }
-
-    const validSources = ['user_input', 'agent_action', 'system_event', 'external_signal'];
-    if (options.source && !validSources.includes(options.source)) {
-      console.error(chalk.red(`Error: Invalid source. Must be one of: ${validSources.join(', ')}`));
-      process.exit(1);
-    }
-
     try {
+      options.content = sanitizeUserString(options.content, {
+        fieldName: '--content',
+        maxLength: 10_000,
+        allowNewlines: true,
+      });
+      options.surface = sanitizeIdentifier(options.surface, '--surface');
+      const validSources = ['user_input', 'agent_action', 'system_event', 'external_signal'];
+      if (options.source && !validSources.includes(options.source)) {
+        throw new Error(`Invalid source. Must be one of: ${validSources.join(', ')}`);
+      }
       const cycles = parsePositiveInteger(options.cycles, '--cycles');
       const gtom = createGToM(options);
       const runs = [];
@@ -1336,6 +1334,122 @@ program
       process.exit(result.exitCode);
     } catch (error) {
       console.error(chalk.red('[GToM] GBrain sync failed:'), error);
+      process.exit(1);
+    }
+  });
+
+const secretsCommand = program
+  .command('secrets')
+  .description('Manage local GToM secrets without printing secret values');
+
+secretsCommand
+  .command('list')
+  .description('List configured secret metadata')
+  .option('--json', 'Output as JSON')
+  .action((options) => {
+    try {
+      const manager = new FileSecretManager();
+      const secrets = manager.listSecrets();
+      if (options.json) {
+        console.log(JSON.stringify({ file: manager.getFilePath(), secrets }, null, 2));
+      } else {
+        console.log(chalk.blue.bold('[GToM] Secrets'));
+        console.log(chalk.gray(`Store: ${manager.getFilePath()}`));
+        if (secrets.length === 0) {
+          console.log(chalk.gray('No local secrets configured'));
+        }
+        for (const secret of secrets) {
+          console.log(`${secret.name} v${secret.version} ${secret.encrypted ? 'encrypted' : 'file-protected'} ${secret.scope ?? ''}`.trim());
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Secret listing failed:'), error);
+      process.exit(1);
+    }
+  });
+
+secretsCommand
+  .command('set')
+  .description('Create or update a secret')
+  .argument('<name>', 'Secret name, such as OPENAI_API_KEY')
+  .requiredOption('--value <value>', 'Secret value')
+  .option('--scope <scope>', 'Secret scope label', 'general')
+  .option('--owner <owner>', 'Secret owner label', 'local')
+  .option('--json', 'Output as JSON')
+  .action((name: string, options) => {
+    try {
+      const manager = new FileSecretManager();
+      const metadata = manager.setSecret(name, sanitizeUserString(options.value, {
+        fieldName: '--value',
+        maxLength: 16_384,
+        allowNewlines: false,
+        trim: false,
+      }), {
+        scope: options.scope,
+        owner: options.owner,
+      });
+      if (options.json) {
+        console.log(JSON.stringify(metadata, null, 2));
+      } else {
+        console.log(chalk.green(`Stored ${metadata.name} v${metadata.version}`));
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Secret set failed:'), error);
+      process.exit(1);
+    }
+  });
+
+secretsCommand
+  .command('rotate')
+  .description('Rotate an existing secret value')
+  .argument('<name>', 'Secret name')
+  .requiredOption('--value <value>', 'New secret value')
+  .option('--scope <scope>', 'Secret scope label')
+  .option('--owner <owner>', 'Secret owner label')
+  .option('--json', 'Output as JSON')
+  .action((name: string, options) => {
+    try {
+      const manager = new FileSecretManager();
+      const metadata = manager.rotateSecret(name, sanitizeUserString(options.value, {
+        fieldName: '--value',
+        maxLength: 16_384,
+        allowNewlines: false,
+        trim: false,
+      }), {
+        scope: options.scope,
+        owner: options.owner,
+      });
+      if (options.json) {
+        console.log(JSON.stringify(metadata, null, 2));
+      } else {
+        console.log(chalk.green(`Rotated ${metadata.name} to v${metadata.version}`));
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Secret rotation failed:'), error);
+      process.exit(1);
+    }
+  });
+
+secretsCommand
+  .command('delete')
+  .description('Delete a local secret')
+  .argument('<name>', 'Secret name')
+  .option('--json', 'Output as JSON')
+  .action((name: string, options) => {
+    try {
+      const manager = new FileSecretManager();
+      const deleted = manager.deleteSecret(name);
+      if (options.json) {
+        console.log(JSON.stringify({ name: sanitizeIdentifier(name, 'secret name'), deleted }, null, 2));
+      } else {
+        console.log(deleted ? chalk.green('Secret deleted') : chalk.yellow('Secret not found'));
+      }
+      process.exit(deleted ? 0 : 1);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Secret delete failed:'), error);
       process.exit(1);
     }
   });

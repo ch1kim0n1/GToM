@@ -7,12 +7,22 @@ import {
 import { GToM } from '../core/gtom.js';
 import { globalObservability } from '../core/observability.js';
 import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
+import { defaultSecretManager } from '../core/secret-manager.js';
+import {
+  AccessPrincipal,
+  AccessScope,
+  PermissionManager,
+  constantTimeEquals,
+  hashToken,
+} from '../core/security.js';
 
-type MCPScope = 'read' | 'write' | 'admin';
+type MCPScope = AccessScope;
 
 interface MCPAccessContext {
   token: string;
   scopes: MCPScope[];
+  userId: string;
+  tokenHash?: string;
 }
 
 interface MCPRateWindow {
@@ -52,6 +62,7 @@ class GToMMCPServer {
   private readonly authRequired: boolean;
   private readonly rateLimitRpm: number;
   private readonly rateLimitRph: number;
+  private readonly permissions: PermissionManager;
 
   constructor() {
     this.server = new Server(
@@ -69,7 +80,7 @@ class GToMMCPServer {
     this.gtom = new GToM();
 
     // Initialize authentication middleware
-    const authSecret = process.env.GTOM_AUTH_SECRET || 'dev-secret-key';
+    const authSecret = defaultSecretManager.getSecret('GTOM_AUTH_SECRET') || 'dev-secret-key';
     this.authMiddleware = createAuthMiddleware({
       secret: authSecret,
       tool: 'gtom',
@@ -79,6 +90,7 @@ class GToMMCPServer {
     this.authRequired = process.env.GTOM_MCP_AUTH_REQUIRED === 'true';
     this.rateLimitRpm = parseInt(process.env.GTOM_RATE_LIMIT_RPM || '60', 10);
     this.rateLimitRph = parseInt(process.env.GTOM_RATE_LIMIT_RPH || '1000', 10);
+    this.permissions = new PermissionManager();
 
     this.setupHandlers();
   }
@@ -308,6 +320,16 @@ class GToMMCPServer {
 
       const rateLimit = this.checkRateLimit(access.context.token);
       if (!rateLimit.allowed) {
+        globalObservability.audit.recordSecurityEvent({
+          event_type: 'mcp_rate_limit_exceeded',
+          actor: access.context.userId,
+          resource: name,
+          scopes: access.context.scopes,
+          metadata: {
+            token_hash: access.context.tokenHash,
+            reset_at: rateLimit.reset_at,
+          },
+        });
         return this.errorResponse(`Rate limit exceeded. Reset at ${rateLimit.reset_at}`);
       }
 
@@ -349,29 +371,34 @@ class GToMMCPServer {
   private authorize(toolName: string, meta?: Record<string, unknown>): { ok: true; context: MCPAccessContext } | { ok: false; error: string } {
     const authHeader = this.getAuthHeader(meta);
     if (!authHeader && !this.authRequired) {
-      return { ok: true, context: { token: 'anonymous-dev-stdio', scopes: ['read', 'write'] } };
+      return { ok: true, context: { token: 'anonymous-dev-stdio', scopes: ['read', 'write'], userId: 'anonymous-dev-stdio' } };
     }
     if (!authHeader) {
+      this.recordSecurityEvent('mcp_auth_missing', toolName, 'anonymous');
       return { ok: false, error: 'Authentication failed: missing authorization token' };
     }
 
     const token = authHeader.replace(/^Bearer\s+/i, '');
-    const envScopes = this.scopesForConfiguredToken(token);
-    let scopes = envScopes;
-    if (!scopes) {
+    const tokenHash = hashToken(token);
+    const configuredPrincipal = this.principalForConfiguredToken(token);
+    let principal = configuredPrincipal;
+    if (!principal) {
       const auth = this.authMiddleware.authenticate(authHeader);
       if (!auth.success) {
+        this.recordSecurityEvent('mcp_auth_failed', toolName, 'unknown', { token_hash: tokenHash, error: auth.error });
         return { ok: false, error: `Authentication failed: ${auth.error}` };
       }
-      scopes = this.normalizeScopes(auth.token?.roles ?? []);
+      const scopes = this.normalizeScopes(auth.token?.roles ?? []);
+      principal = this.permissions.getPrincipal(String(auth.token?.userId ?? auth.token?.sub ?? `token-${tokenHash}`), scopes);
+      principal.tokenHash = tokenHash;
     }
 
     const requiredScopes = TOOL_SCOPES[toolName] ?? ['read'];
-    if (!this.hasScopes(scopes, requiredScopes)) {
+    if (!this.permissions.authorize(principal, requiredScopes, toolName)) {
       return { ok: false, error: `Authorization failed: ${toolName} requires ${requiredScopes.join(', ')} scope` };
     }
 
-    return { ok: true, context: { token, scopes } };
+    return { ok: true, context: { token, scopes: principal.scopes, userId: principal.userId, tokenHash } };
   }
 
   private getAuthHeader(meta?: Record<string, unknown>): string {
@@ -381,14 +408,18 @@ class GToMMCPServer {
     return typeof token === 'string' ? `Bearer ${token}` : '';
   }
 
-  private scopesForConfiguredToken(token: string): MCPScope[] | null {
-    const configured: Array<[string | undefined, MCPScope[]]> = [
-      [process.env.GTOM_MCP_ADMIN_TOKEN, ['admin']],
-      [process.env.GTOM_MCP_WRITE_TOKEN, ['read', 'write']],
-      [process.env.GTOM_MCP_READ_TOKEN, ['read']],
+  private principalForConfiguredToken(token: string): AccessPrincipal | null {
+    const configured: Array<[string | undefined, MCPScope[], string]> = [
+      [defaultSecretManager.getSecret('GTOM_MCP_ADMIN_TOKEN'), ['admin'], 'mcp-admin'],
+      [defaultSecretManager.getSecret('GTOM_MCP_WRITE_TOKEN'), ['read', 'write'], 'mcp-writer'],
+      [defaultSecretManager.getSecret('GTOM_MCP_READ_TOKEN'), ['read'], 'mcp-reader'],
     ];
-    for (const [configuredToken, scopes] of configured) {
-      if (configuredToken && token === configuredToken) return scopes;
+    for (const [configuredToken, scopes, userId] of configured) {
+      if (configuredToken && constantTimeEquals(token, configuredToken)) {
+        const principal = this.permissions.getPrincipal(userId, scopes);
+        principal.tokenHash = hashToken(token);
+        return principal;
+      }
     }
     return null;
   }
@@ -398,11 +429,17 @@ class GToMMCPServer {
     return result.length > 0 ? result : ['read'];
   }
 
-  private hasScopes(scopes: MCPScope[], requiredScopes: MCPScope[]): boolean {
-    if (scopes.includes('admin')) return true;
-    return requiredScopes.every((scope) => {
-      if (scope === 'read') return scopes.includes('read') || scopes.includes('write');
-      return scopes.includes(scope);
+  private recordSecurityEvent(
+    eventType: string,
+    resource: string,
+    actor: string,
+    metadata?: Record<string, unknown>,
+  ): void {
+    globalObservability.audit.recordSecurityEvent({
+      event_type: eventType,
+      actor,
+      resource,
+      metadata,
     });
   }
 

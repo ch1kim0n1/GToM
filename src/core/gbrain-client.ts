@@ -6,6 +6,7 @@ import {
   GBrainCognitiveResponseSchema,
 } from '../types/index.js';
 import { globalObservability } from './observability.js';
+import { defaultSecretManager } from './secret-manager.js';
 
 export type GBrainIntegrationMode = 'http' | 'mcp';
 
@@ -113,7 +114,9 @@ export class GBrainClient {
         ?? process.env.GBRAIN_ENDPOINT
         ?? 'http://localhost:3000',
     );
-    this.authToken = config.authToken ?? process.env.GTOM_GBRAIN_AUTH_TOKEN ?? process.env.GBRAIN_AUTH_TOKEN;
+    this.authToken = config.authToken
+      ?? defaultSecretManager.getSecret('GTOM_GBRAIN_AUTH_TOKEN')
+      ?? defaultSecretManager.getSecret('GBRAIN_AUTH_TOKEN');
     this.mode = config.mode ?? this.parseMode(process.env.GTOM_GBRAIN_MODE) ?? 'http';
     this.timeoutMs = config.timeoutMs ?? Number(process.env.GTOM_GBRAIN_TIMEOUT_MS ?? 1000);
     this.maxRetries = config.maxRetries ?? Number(process.env.GTOM_GBRAIN_MAX_RETRIES ?? 2);

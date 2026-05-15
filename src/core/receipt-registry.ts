@@ -5,6 +5,7 @@ import * as lockfile from 'proper-lockfile';
 import { Pool } from 'pg';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import { globalObservability } from './observability.js';
+import { defaultSecretManager } from './secret-manager.js';
 
 const CURRENT_SCHEMA_VERSION = 1;
 const DEFAULT_RECEIPT_TTL_DAYS = 365;
@@ -147,7 +148,9 @@ export class ReceiptRegistry {
     this.baseDir = options.baseDir ?? path.join(process.cwd(), projectName, 'test', 'baselines');
     this.basePath = path.join(this.baseDir, `receipts-${this.week}.jsonl`);
     this.schemaPath = path.join(this.baseDir, `schema.json`);
-    this.hmacSecret = options.hmacSecret ?? process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret';
+    this.hmacSecret = options.hmacSecret
+      ?? defaultSecretManager.getSecret('GTOM_RECEIPT_HMAC_SECRET')
+      ?? 'gtom-dev-receipt-secret';
     this.ttlDays = options.ttlDays ?? parseInt(process.env.GTOM_RECEIPT_TTL_DAYS ?? `${DEFAULT_RECEIPT_TTL_DAYS}`, 10);
     this.archiveAfterDays = options.archiveAfterDays ?? DEFAULT_ARCHIVE_AFTER_DAYS;
     this.postgresUrl = options.postgresUrl === undefined

@@ -11,6 +11,8 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { GToM } from './core/gtom';
 import { StructuredLogger } from '../../shared/src/observability/structured-logger.js';
 import { globalObservability } from './core/observability';
+import { sanitizeJsonValue, sanitizeUserString } from './core/input-sanitizer';
+import { FixedWindowRateLimiter, hashToken } from './core/security';
 
 export interface ConflictPredictionRequest {
   task: string;
@@ -37,11 +39,20 @@ export class GToMServer {
   private port: number;
   private shutdownHandlers: Array<() => Promise<void>> = [];
   private logger: StructuredLogger;
+  private readonly rateLimiter: FixedWindowRateLimiter;
+  private readonly corsOrigin: string;
+  private readonly maxBodyBytes: number;
 
   constructor(gtom: GToM, port: number = 3003) {
     this.gtom = gtom;
     this.port = port;
     this.logger = new StructuredLogger('gtom-server');
+    this.rateLimiter = new FixedWindowRateLimiter(
+      parseInt(process.env.GTOM_HTTP_RATE_LIMIT_RPM ?? '120', 10),
+      parseInt(process.env.GTOM_HTTP_RATE_LIMIT_RPH ?? '2000', 10),
+    );
+    this.corsOrigin = process.env.GTOM_HTTP_CORS_ORIGIN ?? '*';
+    this.maxBodyBytes = parseInt(process.env.GTOM_HTTP_MAX_BODY_BYTES ?? `${1024 * 1024}`, 10);
   }
 
   /**
@@ -90,10 +101,12 @@ export class GToMServer {
     const start = performance.now();
 
     // Enable CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Origin', this.corsOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Trace-Id, X-GBrain-Trace-Id, Traceparent');
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Trace-Id, X-GBrain-Trace-Id, Traceparent');
     res.setHeader('X-Trace-Id', span.trace_id);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
 
     if (method === 'OPTIONS') {
       res.writeHead(204);
@@ -102,6 +115,22 @@ export class GToMServer {
     }
 
     try {
+      const identity = this.clientIdentity(req);
+      const rateLimit = this.rateLimiter.check(identity);
+      res.setHeader('X-RateLimit-Remaining', String(rateLimit.remaining));
+      res.setHeader('X-RateLimit-Reset', rateLimit.reset_at);
+      if (!rateLimit.allowed) {
+        globalObservability.audit.recordSecurityEvent({
+          event_type: 'http_rate_limit_exceeded',
+          actor: identity,
+          resource: url ?? '/',
+          metadata: { reset_at: rateLimit.reset_at },
+        });
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Rate limit exceeded', reset_at: rateLimit.reset_at }));
+        return;
+      }
+
       if (url === '/gtom/predict-conflicts' && method === 'POST') {
         await this.handlePredictConflicts(req, res);
       } else if (url === '/health/live' && method === 'GET') {
@@ -133,17 +162,36 @@ export class GToMServer {
    */
   private async handlePredictConflicts(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const bufferModule = await import('node:buffer');
-
     const buffers: Buffer[] = [];
+    let bytesRead = 0;
     for await (const chunk of req) {
-      buffers.push(chunk as Buffer);
+      const buffer = chunk as Buffer;
+      bytesRead += buffer.length;
+      if (bytesRead > this.maxBodyBytes) {
+        globalObservability.audit.recordSecurityEvent({
+          event_type: 'http_body_rejected',
+          resource: '/gtom/predict-conflicts',
+          metadata: { reason: 'body_too_large', max_body_bytes: this.maxBodyBytes },
+        });
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Request body too large' }));
+        return;
+      }
+      buffers.push(buffer);
     }
     const body = bufferModule.Buffer.concat(buffers).toString();
 
-    const request: ConflictPredictionRequest = JSON.parse(body);
+    const request = sanitizeJsonValue(JSON.parse(body), 'predict-conflicts') as ConflictPredictionRequest & {
+      active_attempts?: unknown[];
+    };
+    const task = sanitizeUserString(request.task, {
+      fieldName: 'task',
+      maxLength: 10_000,
+      allowNewlines: true,
+    });
     const result = await this.gtom.predictConflict({
-      task: (request as any).task,
-      active_attempts: (request as any).active_attempts ?? [],
+      task,
+      active_attempts: Array.isArray(request.active_attempts) ? request.active_attempts as any : [],
     });
 
     // Derive summary fields from the predicted_conflicts list.
@@ -156,7 +204,7 @@ export class GToMServer {
       maxSeverity >= 0.7 ? 'high' : maxSeverity >= 0.4 ? 'medium' : 'low';
 
     const response = {
-      task: request.task,
+      task,
       conflicts,
       overall_risk,
       confidence: avgConfidence,
@@ -191,6 +239,18 @@ export class GToMServer {
   private async handleOtelMetrics(res: ServerResponse): Promise<void> {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(this.gtom.exportMetrics('otel')));
+  }
+
+  private clientIdentity(req: IncomingMessage): string {
+    const auth = req.headers.authorization;
+    if (auth) {
+      return `token:${hashToken(auth.replace(/^Bearer\s+/i, ''))}`;
+    }
+    const forwardedFor = req.headers['x-forwarded-for'];
+    const ip = Array.isArray(forwardedFor)
+      ? forwardedFor[0]
+      : forwardedFor?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+    return `ip:${ip}`;
   }
 
   /**

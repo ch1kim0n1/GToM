@@ -15,6 +15,7 @@ import { encoding_for_model, get_encoding } from 'tiktoken';
 import { createLogger } from '../../../shared/src/core/structured-logger.js';
 import { BudgetLedger } from './budget-ledger.js';
 import { globalObservability } from './observability.js';
+import { defaultSecretManager } from './secret-manager.js';
 
 const logger = createLogger('gtom-llm-client');
 
@@ -158,8 +159,8 @@ export class LLMClient {
       timeoutMs: 30000,
       maxRetries: 3,
       retryBaseDelayMs: 1000,
-      anthropicApiKey: config.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '',
-      openaiApiKey: config.openaiApiKey || process.env.OPENAI_API_KEY || '',
+      anthropicApiKey: config.anthropicApiKey || defaultSecretManager.getSecret('ANTHROPIC_API_KEY') || '',
+      openaiApiKey: config.openaiApiKey || defaultSecretManager.getSecret('OPENAI_API_KEY') || '',
     };
     this.budgetLedger = config.budgetLedger ?? new BudgetLedger({
       maxBudgetUsd: config.maxBudgetUsd ?? Number(process.env.GTOM_MAX_BUDGET_USD ?? 20),

@@ -38,7 +38,13 @@ export {
   globalObservability,
   redactPII,
 } from './observability.js';
-export type { ShellJobAuditEntry, DecisionAuditEntry, SpanContext, LocalLogEntry } from './observability.js';
+export type { ShellJobAuditEntry, DecisionAuditEntry, SecurityAuditEntry, SpanContext, LocalLogEntry } from './observability.js';
+export { FileSecretManager, defaultSecretManager } from './secret-manager.js';
+export type { StoredSecretMetadata, SetSecretOptions } from './secret-manager.js';
+export { FixedWindowRateLimiter, PermissionManager, hashToken, hasRequiredScopes, scopesForRoles } from './security.js';
+export type { AccessScope, PermissionRole, AccessPrincipal, RateLimitResult } from './security.js';
+export { sanitizeIdentifier, sanitizeJsonValue, sanitizePath, sanitizeUrl, sanitizeUserString } from './input-sanitizer.js';
+export type { SanitizeStringOptions } from './input-sanitizer.js';
 
 export { VulnerabilityRegistry } from './vulnerability-registry.js';
 export type { Vulnerability } from './vulnerability-registry.js';
