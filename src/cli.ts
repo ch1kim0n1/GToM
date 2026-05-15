@@ -6,6 +6,7 @@ import * as fs from 'fs/promises';
 import { GToM } from './core/gtom.js';
 import {
   ReceiptRegistry,
+  RegressionToleranceConfig,
   compareReceiptRegression,
   diffReceipts,
   readReceiptFile,
@@ -33,6 +34,55 @@ async function loadLatestReceipt(): Promise<any> {
     throw new Error('No local receipts found');
   }
   return latest;
+}
+
+async function loadRegressionConfig(options: any): Promise<RegressionToleranceConfig> {
+  const config: RegressionToleranceConfig = {
+    defaultScoreTolerance: parseFloat(options.tolerance ?? '0.05'),
+    costToleranceUsd: parseFloat(options.costToleranceUsd ?? '0'),
+    costTolerancePct: parseFloat(options.costTolerancePct ?? '0'),
+    latencyToleranceMs: parseFloat(options.latencyToleranceMs ?? '0'),
+    latencyTolerancePct: parseFloat(options.latencyTolerancePct ?? '0'),
+    metricTolerances: {
+      tier1_success_rate: parseFloat(options.tier1Tolerance ?? '0.05'),
+    },
+  };
+
+  if (options.dimensionTolerance) {
+    config.dimensionTolerances = parseKeyValueNumbers(options.dimensionTolerance);
+  }
+
+  if (options.config) {
+    const parsed = JSON.parse(await fs.readFile(options.config, 'utf8')) as RegressionToleranceConfig;
+    return {
+      ...config,
+      ...parsed,
+      dimensionTolerances: {
+        ...(config.dimensionTolerances ?? {}),
+        ...(parsed.dimensionTolerances ?? {}),
+      },
+      metricTolerances: {
+        ...(config.metricTolerances ?? {}),
+        ...(parsed.metricTolerances ?? {}),
+      },
+    };
+  }
+
+  return config;
+}
+
+function parseKeyValueNumbers(values: string | string[]): Record<string, number> {
+  const entries = Array.isArray(values) ? values : [values];
+  const result: Record<string, number> = {};
+  for (const entry of entries) {
+    const [key, rawValue] = entry.split('=');
+    const value = Number(rawValue);
+    if (!key || !Number.isFinite(value)) {
+      throw new Error(`Invalid tolerance '${entry}'. Expected name=value.`);
+    }
+    result[key] = value;
+  }
+  return result;
 }
 
 function printRegressionResult(result: any, quiet?: boolean, json?: boolean): void {
@@ -372,13 +422,20 @@ evalCommand
   .requiredOption('--against <receipt>', 'Baseline receipt path')
   .option('--current <receipt>', 'Current receipt path (defaults to latest local receipt)')
   .option('--tolerance <number>', 'Allowed score drop before regression', '0.05')
+  .option('--dimension-tolerance <name=value...>', 'Per-dimension score tolerance, repeatable')
+  .option('--cost-tolerance-usd <number>', 'Allowed absolute cost increase in USD', '0')
+  .option('--cost-tolerance-pct <number>', 'Allowed relative cost increase as decimal fraction', '0')
+  .option('--latency-tolerance-ms <number>', 'Allowed absolute latency increase in milliseconds', '0')
+  .option('--latency-tolerance-pct <number>', 'Allowed relative latency increase as decimal fraction', '0')
+  .option('--tier1-tolerance <number>', 'Allowed tier1_success_rate drop', '0.05')
+  .option('--config <path>', 'Regression tolerance config JSON')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
       const baseline = await loadReceipt(options.against);
       const current = options.current ? await loadReceipt(options.current) : await loadLatestReceipt();
-      const result = compareReceiptRegression(current, baseline, parseFloat(options.tolerance));
+      const result = compareReceiptRegression(current, baseline, await loadRegressionConfig(options));
       printRegressionResult(result, options.quiet, options.json);
       process.exit(result.regressed ? 1 : 0);
     } catch (error) {
@@ -471,6 +528,13 @@ program
   .option('-c, --corpus <path>', 'Path to test corpus JSON')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('--tolerance <number>', 'Tolerance for regression detection', '0.05')
+  .option('--dimension-tolerance <name=value...>', 'Per-dimension score tolerance, repeatable')
+  .option('--cost-tolerance-usd <number>', 'Allowed absolute cost increase in USD', '0')
+  .option('--cost-tolerance-pct <number>', 'Allowed relative cost increase as decimal fraction', '0')
+  .option('--latency-tolerance-ms <number>', 'Allowed absolute latency increase in milliseconds', '0')
+  .option('--latency-tolerance-pct <number>', 'Allowed relative latency increase as decimal fraction', '0')
+  .option('--tier1-tolerance <number>', 'Allowed tier1_success_rate drop', '0.05')
+  .option('--config <path>', 'Regression tolerance config JSON')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
@@ -482,7 +546,7 @@ program
       }
       const baseline = await loadReceipt(baselinePath);
       const current = options.current ? await loadReceipt(options.current) : await loadLatestReceipt();
-      const result = compareReceiptRegression(current, baseline, parseFloat(options.tolerance));
+      const result = compareReceiptRegression(current, baseline, await loadRegressionConfig(options));
       printRegressionResult(result, options.quiet, options.json);
       process.exit(result.regressed ? 1 : 0);
     } catch (error) {

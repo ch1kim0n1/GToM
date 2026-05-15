@@ -39,9 +39,53 @@ export interface RegressionResult {
   baseline_receipt_id: string;
   current_receipt_id: string;
   tolerance: number;
+  dimension_tolerances: Record<string, number>;
   regressed: boolean;
   reasons: string[];
   score_delta: number;
+  dimension_comparisons: Record<string, {
+    baseline_score: number;
+    current_score: number;
+    delta: number;
+    tolerance: number;
+    baseline_wilson_95_ci: { lower: number; upper: number };
+    current_wilson_95_ci: { lower: number; upper: number };
+    regressed: boolean;
+  }>;
+  cost_regression: {
+    baseline_cost_usd: number;
+    current_cost_usd: number;
+    delta_usd: number;
+    tolerance_usd: number;
+    regressed: boolean;
+  };
+  latency_regression: {
+    baseline_latency_ms: number | null;
+    current_latency_ms: number | null;
+    delta_ms: number | null;
+    tolerance_ms: number;
+    regressed: boolean;
+  };
+  metric_comparisons: Record<string, {
+    baseline_value: number;
+    current_value: number;
+    delta: number;
+    tolerance: number;
+    baseline_wilson_95_ci: { lower: number; upper: number };
+    current_wilson_95_ci: { lower: number; upper: number };
+    regressed: boolean;
+  }>;
+}
+
+export interface RegressionToleranceConfig {
+  defaultScoreTolerance?: number;
+  dimensionTolerances?: Record<string, number>;
+  costToleranceUsd?: number;
+  costTolerancePct?: number;
+  latencyToleranceMs?: number;
+  latencyTolerancePct?: number;
+  metricTolerances?: Record<string, number>;
+  sampleSize?: number;
 }
 
 /**
@@ -470,12 +514,19 @@ export function diffReceipts(a: ExecutionReceipt, b: ExecutionReceipt): ReceiptD
   };
 }
 
-export function compareReceiptRegression(current: ExecutionReceipt, baseline: ExecutionReceipt, tolerance = 0.05): RegressionResult {
+export function compareReceiptRegression(current: ExecutionReceipt, baseline: ExecutionReceipt, toleranceOrConfig: number | RegressionToleranceConfig = 0.05): RegressionResult {
+  const config: RegressionToleranceConfig = typeof toleranceOrConfig === 'number'
+    ? { defaultScoreTolerance: toleranceOrConfig }
+    : toleranceOrConfig;
+  const defaultScoreTolerance = Math.abs(config.defaultScoreTolerance ?? 0.05);
+  const dimensions = new Set([...Object.keys(baseline.scores), ...Object.keys(current.scores)]);
+  const dimensionComparisons: RegressionResult['dimension_comparisons'] = {};
   const reasons: string[] = [];
   const scoreDelta = current.overall_score - baseline.overall_score;
+  const sampleSize = config.sampleSize ?? inferComparisonSampleSize(current, baseline);
 
-  if (scoreDelta < -Math.abs(tolerance)) {
-    reasons.push(`overall_score dropped by ${Math.abs(scoreDelta).toFixed(4)} (tolerance ${Math.abs(tolerance).toFixed(4)})`);
+  if (scoreDelta < -defaultScoreTolerance) {
+    reasons.push(`overall_score dropped by ${Math.abs(scoreDelta).toFixed(4)} (tolerance ${defaultScoreTolerance.toFixed(4)})`);
   }
   if (baseline.hard_gates_passed && !current.hard_gates_passed) {
     reasons.push('hard gates passed in baseline but failed in current receipt');
@@ -484,13 +535,106 @@ export function compareReceiptRegression(current: ExecutionReceipt, baseline: Ex
     reasons.push(`verdict regressed from ${baseline.verdict} to ${current.verdict}`);
   }
 
+  for (const dimension of dimensions) {
+    const baselineScore = baseline.scores[dimension]?.score ?? 0;
+    const currentScore = current.scores[dimension]?.score ?? 0;
+    const tolerance = Math.abs(config.dimensionTolerances?.[dimension] ?? defaultScoreTolerance);
+    const delta = currentScore - baselineScore;
+    const baselineCi = wilsonInterval(Math.round(baselineScore * sampleSize), sampleSize);
+    const currentCi = wilsonInterval(Math.round(currentScore * sampleSize), sampleSize);
+    const pointRegression = delta < -tolerance;
+    const ciRegression = currentCi.upper < baselineCi.lower - tolerance;
+    const regressed = pointRegression || ciRegression;
+
+    dimensionComparisons[dimension] = {
+      baseline_score: baselineScore,
+      current_score: currentScore,
+      delta: roundDelta(delta),
+      tolerance,
+      baseline_wilson_95_ci: baselineCi,
+      current_wilson_95_ci: currentCi,
+      regressed,
+    };
+
+    if (regressed) {
+      reasons.push(`${dimension} score regressed by ${Math.abs(delta).toFixed(4)} (tolerance ${tolerance.toFixed(4)})`);
+    }
+  }
+
+  const costTolerance = Math.max(
+    config.costToleranceUsd ?? 0,
+    baseline.cost_usd * (config.costTolerancePct ?? 0)
+  );
+  const costDelta = current.cost_usd - baseline.cost_usd;
+  const costRegression = {
+    baseline_cost_usd: baseline.cost_usd,
+    current_cost_usd: current.cost_usd,
+    delta_usd: roundDelta(costDelta),
+    tolerance_usd: roundDelta(costTolerance),
+    regressed: costDelta > costTolerance,
+  };
+  if (costRegression.regressed) {
+    reasons.push(`cost_usd increased by ${costRegression.delta_usd.toFixed(4)} (tolerance ${costRegression.tolerance_usd.toFixed(4)})`);
+  }
+
+  const baselineLatency = numericMetadata(baseline, 'latency_ms');
+  const currentLatency = numericMetadata(current, 'latency_ms');
+  const latencyTolerance = Math.max(
+    config.latencyToleranceMs ?? 0,
+    (baselineLatency ?? 0) * (config.latencyTolerancePct ?? 0)
+  );
+  const latencyDelta = baselineLatency === null || currentLatency === null ? null : currentLatency - baselineLatency;
+  const latencyRegression = {
+    baseline_latency_ms: baselineLatency,
+    current_latency_ms: currentLatency,
+    delta_ms: latencyDelta === null ? null : roundDelta(latencyDelta),
+    tolerance_ms: roundDelta(latencyTolerance),
+    regressed: latencyDelta !== null && latencyDelta > latencyTolerance,
+  };
+  if (latencyRegression.regressed && latencyDelta !== null) {
+    reasons.push(`latency_ms increased by ${latencyDelta.toFixed(2)} (tolerance ${latencyTolerance.toFixed(2)})`);
+  }
+
+  const metricComparisons: RegressionResult['metric_comparisons'] = {};
+  for (const [metric, tolerance] of Object.entries(config.metricTolerances ?? {})) {
+    const baselineValue = numericMetadata(baseline, metric);
+    const currentValue = numericMetadata(current, metric);
+    if (baselineValue === null || currentValue === null) continue;
+    const delta = currentValue - baselineValue;
+    const baselineCi = wilsonInterval(Math.round(baselineValue * sampleSize), sampleSize);
+    const currentCi = wilsonInterval(Math.round(currentValue * sampleSize), sampleSize);
+    const regressed = delta < -Math.abs(tolerance) || currentCi.upper < baselineCi.lower - Math.abs(tolerance);
+
+    metricComparisons[metric] = {
+      baseline_value: baselineValue,
+      current_value: currentValue,
+      delta: roundDelta(delta),
+      tolerance: Math.abs(tolerance),
+      baseline_wilson_95_ci: baselineCi,
+      current_wilson_95_ci: currentCi,
+      regressed,
+    };
+
+    if (regressed) {
+      reasons.push(`${metric} regressed by ${Math.abs(delta).toFixed(4)} (tolerance ${Math.abs(tolerance).toFixed(4)})`);
+    }
+  }
+
   return {
     baseline_receipt_id: baseline.receipt_id,
     current_receipt_id: current.receipt_id,
-    tolerance: Math.abs(tolerance),
+    tolerance: defaultScoreTolerance,
+    dimension_tolerances: Object.fromEntries([...dimensions].map((dimension) => [
+      dimension,
+      Math.abs(config.dimensionTolerances?.[dimension] ?? defaultScoreTolerance),
+    ])),
     regressed: reasons.length > 0,
     reasons,
     score_delta: roundDelta(scoreDelta),
+    dimension_comparisons: dimensionComparisons,
+    cost_regression: costRegression,
+    latency_regression: latencyRegression,
+    metric_comparisons: metricComparisons,
   };
 }
 
@@ -543,6 +687,38 @@ function verdictRank(verdict: string): number {
     pass: 3,
   };
   return ranks[verdict] ?? 0;
+}
+
+function wilsonInterval(successes: number, total: number): { lower: number; upper: number } {
+  if (total <= 0) {
+    return { lower: 0, upper: 0 };
+  }
+  const boundedSuccesses = Math.max(0, Math.min(total, successes));
+  const z = 1.96;
+  const phat = boundedSuccesses / total;
+  const denominator = 1 + (z * z) / total;
+  const center = phat + (z * z) / (2 * total);
+  const margin = z * Math.sqrt((phat * (1 - phat) + (z * z) / (4 * total)) / total);
+  return {
+    lower: Math.max(0, Math.min(1, (center - margin) / denominator)),
+    upper: Math.max(0, Math.min(1, (center + margin) / denominator)),
+  };
+}
+
+function numericMetadata(receipt: ExecutionReceipt, key: string): number | null {
+  const value = receipt.metadata?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function inferComparisonSampleSize(current: ExecutionReceipt, baseline: ExecutionReceipt): number {
+  const candidates = [
+    numericMetadata(current, 'sample_size'),
+    numericMetadata(baseline, 'sample_size'),
+    Array.isArray(current.metadata?.consensus?.votes) ? current.metadata.consensus.votes.length : null,
+    Array.isArray(baseline.metadata?.consensus?.votes) ? baseline.metadata.consensus.votes.length : null,
+    30,
+  ];
+  return Math.max(1, Math.round(candidates.find((value) => typeof value === 'number' && value > 0) ?? 30));
 }
 
 function roundDelta(value: number): number {

@@ -126,5 +126,30 @@ describe('ReceiptRegistry audit behavior', () => {
     const regression = compareReceiptRegression(current, baseline, 0.05);
     expect(regression.regressed).toBe(true);
     expect(regression.reasons.length).toBeGreaterThan(0);
+    expect(regression.dimension_comparisons.authenticity.baseline_wilson_95_ci).toBeDefined();
+  });
+
+  it('detects cost, latency, and tier1 success rate regressions', () => {
+    const baseline = makeReceipt({
+      metadata: { latency_ms: 100, tier1_success_rate: 0.95, sample_size: 100 },
+    });
+    const current = makeReceipt({
+      receipt_id: '22222222-2222-4222-8222-222222222222',
+      cost_usd: 0.05,
+      metadata: { latency_ms: 140, tier1_success_rate: 0.8, sample_size: 100 },
+    });
+
+    const regression = compareReceiptRegression(current, baseline, {
+      defaultScoreTolerance: 0.05,
+      costToleranceUsd: 0.001,
+      latencyToleranceMs: 10,
+      metricTolerances: { tier1_success_rate: 0.05 },
+      sampleSize: 100,
+    });
+
+    expect(regression.cost_regression.regressed).toBe(true);
+    expect(regression.latency_regression.regressed).toBe(true);
+    expect(regression.metric_comparisons.tier1_success_rate.regressed).toBe(true);
+    expect(regression.regressed).toBe(true);
   });
 });

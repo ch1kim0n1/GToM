@@ -1,7 +1,10 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { AuthenticityScorer } from '../src/core/authenticity.js';
-import { ReceiptRegistry } from '../src/core/receipt-registry.js';
+import { ReceiptRegistry, compareReceiptRegression, RegressionToleranceConfig } from '../src/core/receipt-registry.js';
 import { GTOM_RUBRIC_V1 } from '../src/core/gtom-rubric.js';
 import { Vulnerability, CognitiveState } from '../src/types/index.js';
+import { ExecutionReceipt } from '../src/types/quality-rubric.js';
 
 function makeVulnerability(category: Vulnerability['category']): Vulnerability {
   return {
@@ -29,7 +32,7 @@ function makeCognitiveState(): CognitiveState {
 describe('AuthenticityScorer Baseline Regression Tests', () => {
   let scorer: AuthenticityScorer;
   let registry: ReceiptRegistry;
-  const TOLERANCE = 0.05;
+  const baselineRecords = readBaselineRecords();
 
   beforeEach(() => {
     scorer = new AuthenticityScorer();
@@ -81,26 +84,18 @@ describe('AuthenticityScorer Baseline Regression Tests', () => {
     expect(latest?.overall_score).toBeLessThanOrEqual(1);
   });
 
-  it('baseline comparison: current authenticity score within tolerance of baseline', async () => {
-    const decision = {
-      context: 'Test context',
-      action: 'Test action',
-      vulnerabilities: [makeVulnerability('authority_bias')],
-      cognitiveState: makeCognitiveState(),
-      recentInfluences: [],
-    };
-
-    const score = await scorer.scoreDecision(decision);
+  it.each(baselineRecords)('baseline comparison: %s remains within versioned gates', async (record) => {
+    const score = await scorer.scoreDecision(record.decision);
 
     await new Promise(resolve => setTimeout(resolve, 100));
 
     const latest = await registry.getLatest();
-    const currentScore = latest?.scores?.authenticity?.score ?? 0;
-    
-    // Baseline locked from initial calibration run (empirically captured)
-    const baselineAuthenticityScore = 0.67;
-    const diff = Math.abs(currentScore - baselineAuthenticityScore);
-    expect(diff).toBeLessThanOrEqual(TOLERANCE);
+    expect(latest).toBeDefined();
+
+    const result = compareReceiptRegression(latest!, record.receipt, record.tolerances);
+    expect(result.regressed).toBe(false);
+    expect(result.dimension_comparisons.authenticity.baseline_wilson_95_ci).toBeDefined();
+    expect(score.authenticity_score).toBeCloseTo(latest!.scores.authenticity.score, 4);
   });
 
   it('receipt is persisted to registry', async () => {
@@ -158,3 +153,27 @@ describe('AuthenticityScorer Baseline Regression Tests', () => {
     expect(latest?.metadata.rubric_level).toBeLessThanOrEqual(5);
   });
 });
+
+interface BaselineRecord {
+  schema_version: 1;
+  baseline_id: string;
+  name: string;
+  decision: {
+    context: string;
+    action: string;
+    vulnerabilities: Vulnerability[];
+    cognitiveState: CognitiveState;
+    recentInfluences: string[];
+  };
+  receipt: ExecutionReceipt;
+  tolerances: RegressionToleranceConfig;
+}
+
+function readBaselineRecords(): BaselineRecord[] {
+  const baselinePath = path.join(process.cwd(), 'test', 'baselines', 'regression-baselines-v1.jsonl');
+  return fs.readFileSync(baselinePath, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as BaselineRecord);
+}
