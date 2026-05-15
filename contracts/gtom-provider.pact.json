@@ -1,0 +1,44 @@
+{
+  "consumer": {
+    "name": "gstack-tools"
+  },
+  "provider": {
+    "name": "GToM"
+  },
+  "interactions": [
+    {
+      "description": "predict conflicts for an orchestration task",
+      "request": {
+        "method": "POST",
+        "path": "/gtom/predict-conflicts",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "task": {
+            "raw_description": "update TypeScript service"
+          },
+          "active_attempts": []
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "task": "update TypeScript service",
+          "conflicts": [],
+          "overall_risk": "low",
+          "confidence": 1,
+          "timestamp": "2026-05-15T00:00:00.000Z"
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    }
+  }
+}

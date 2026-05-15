@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "packageManager": "npm",
+  "testRunner": "command",
+  "checkers": ["typescript"],
+  "mutate": [
+    "src/core/input-sanitizer.ts",
+    "src/core/gtom-rubric.ts"
+  ],
+  "coverageAnalysis": "off",
+  "commandRunner": {
+    "command": "npx jest test/mutation.test.ts --runInBand --silent"
+  },
+  "thresholds": {
+    "high": 80,
+    "low": 70,
+    "break": 0
+  }
+}
