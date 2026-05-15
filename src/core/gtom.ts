@@ -14,7 +14,7 @@ import { AuthenticityScorer } from './authenticity.js';
 import { CognitiveICE } from './ice.js';
 import { ConflictPredictor } from './conflict-predictor.js';
 import { ReceiptRegistry } from './receipt-registry.js';
-import { DriftDetector } from '../../../shared/src/core/drift-detector.js';
+import { DriftDetector } from './drift-detector.js';
 import { BudgetLedger } from './budget-ledger.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
 import { AuditLogger } from '../../../shared/src/core/audit-logger.js';

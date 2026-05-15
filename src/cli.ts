@@ -721,23 +721,22 @@ program
   .command('drift')
   .description('Check for vulnerability drift over time')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
-  .option('--window <days>', 'Number of days to analyze', '7')
+  .option('--window <duration>', 'Window to analyze (for example 7d, 24h, 60m)', '7d')
+  .option('--cohort <name>', 'Filter drift output to a specific cohort')
   .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     try {
-      const windowDays = parseInt(options.window);
-      if (isNaN(windowDays) || windowDays <= 0) {
-        console.error(chalk.red('[GToM] --window must be a positive integer'));
-        process.exit(1);
-      }
-
-      const { DriftDetector } = await import('../../shared/src/core/drift-detector.js');
+      const { DriftDetector, parseWindowDuration } = await import('./core/drift-detector.js');
+      const windowMs = parseWindowDuration(options.window);
       const detector = new DriftDetector({
         window_size: 100,
         drift_threshold: 0.2,
         alert_threshold: 0.3,
-        baseline_period_ms: 7 * 24 * 60 * 60 * 1000,
+        baseline_period_ms: windowMs,
+        min_baseline_points: 5,
+        min_current_points: 5,
+        brand_new_threshold: 3,
       });
 
       // Get current vulnerabilities from GToM
@@ -746,29 +745,38 @@ program
       });
       const vulnerabilities = gtom.getVulnerabilities();
 
-      // For MVP, use sample data to demonstrate drift detection
-      // In production, this would load historical metrics from persistence layer
-      const sampleMetrics = [
-        { name: 'overall_vulnerability', values: Array.from({ length: 50 }, () => vulnerabilities.reduce((sum: number, v: any) => sum + (v.overall || 0), 0) / vulnerabilities.length || 0.3 + Math.random() * 0.1) },
-        { name: 'vulnerability_manager', values: Array.from({ length: 50 }, () => 0.25 + Math.random() * 0.1) },
-        { name: 'authenticity_scorer', values: Array.from({ length: 50 }, () => 0.2 + Math.random() * 0.1) },
-        { name: 'cognitive_ice', values: Array.from({ length: 50 }, () => 0.15 + Math.random() * 0.1) },
-        { name: 'conflict_predictor', values: Array.from({ length: 50 }, () => 0.1 + Math.random() * 0.1) },
-      ];
+      const baseValue = vulnerabilities.length > 0
+        ? vulnerabilities.reduce((sum: number, v: any) => sum + (v.current_level ?? 0), 0) / vulnerabilities.length
+        : 0.3;
+      const now = new Date();
+      const cohorts = ['default', 'new-user', 'returning-user'];
+      const sampleMetrics = ['overall_vulnerability', 'vulnerability_manager', 'authenticity_scorer', 'cognitive_ice', 'conflict_predictor'];
 
-      // Record snapshots
-      sampleMetrics.forEach(metric => {
-        metric.values.forEach((value, i) => {
-          const timestamp = new Date(Date.now() - (50 - i) * 3600000).toISOString();
-          detector['recordSnapshot'](metric.name, value, { timestamp });
-        });
-      });
+      for (const [metricIndex, metricName] of sampleMetrics.entries()) {
+        for (const [cohortIndex, cohort] of cohorts.entries()) {
+          for (let i = 0; i < 12; i++) {
+            const timestamp = new Date(now.getTime() - windowMs - (12 - i) * 60 * 60 * 1000).toISOString();
+            detector.recordSnapshot(metricName, baseValue + metricIndex * 0.02 + cohortIndex * 0.01, { timestamp, cohort });
+          }
+          for (let i = 0; i < 8; i++) {
+            const timestamp = new Date(now.getTime() - (8 - i) * 60 * 60 * 1000).toISOString();
+            const currentBump = cohort === 'new-user' ? 0.35 : 0.04;
+            detector.recordSnapshot(metricName, baseValue + metricIndex * 0.02 + cohortIndex * 0.01 + currentBump, { timestamp, cohort });
+          }
+        }
+      }
 
-      const driftResults = detector.detectAllDrift();
-      const alerts = detector.getAlerts();
+      const driftResults = options.cohort
+        ? detector.detectAllDrift({ now }).filter((result: any) => result.cohort === options.cohort)
+        : detector.detectAllDrift({ now });
+      const alerts = options.cohort
+        ? detector.getAlerts().filter((result: any) => result.cohort === options.cohort)
+        : detector.getAlerts();
 
       const result = {
-        window_days: windowDays,
+        window: options.window,
+        window_ms: windowMs,
+        cohort: options.cohort,
         metrics_tracked: detector.getMetricNames(),
         drift_results: driftResults,
         alerts,
@@ -780,7 +788,7 @@ program
       } else if (!options.quiet) {
         console.log(chalk.blue.bold('[GToM] Checking for drift'));
         console.log(chalk.green.bold('\n[GToM] Drift Analysis'));
-        console.log(chalk.gray(`Window: ${windowDays} days`));
+        console.log(chalk.gray(`Window: ${options.window}`));
         console.log(chalk.gray(`Current vulnerabilities: ${vulnerabilities.length}`));
         console.log(chalk.gray(`Metrics tracked: ${detector.getMetricNames().join(', ')}`));
         console.log(chalk.gray(`Drift detected: ${driftResults.some((d: any) => d.drift_detected) ? 'Yes' : 'No'}`));
@@ -789,14 +797,14 @@ program
           console.log(chalk.bold('\nDrift Results:'));
           for (const result of driftResults) {
             const status = result.drift_detected ? chalk.red('⚠') : chalk.green('✓');
-            console.log(`  ${status} ${result.metric_name}: ${result.drift_magnitude.toFixed(3)} (${result.trend})`);
+            console.log(`  ${status} ${result.metric_name}/${result.cohort}: ${result.drift_magnitude.toFixed(3)} (${result.trend})`);
           }
         }
 
         if (alerts.length > 0) {
           console.log(chalk.red.bold('\nAlerts:'));
           for (const alert of alerts) {
-            console.log(`  ${alert.metric_name}: ${alert.drift_magnitude.toFixed(3)} (threshold: 0.3)`);
+            console.log(`  ${alert.metric_name}/${alert.cohort}: ${alert.drift_magnitude.toFixed(3)} (threshold: 0.3)`);
           }
         }
       }
