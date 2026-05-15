@@ -6,7 +6,37 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { GToM } from '../core/gtom.js';
 import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
-import { AuthRateLimiter } from '../../../shared/src/core/auth-rate-limit.js';
+
+type MCPScope = 'read' | 'write' | 'admin';
+
+interface MCPAccessContext {
+  token: string;
+  scopes: MCPScope[];
+}
+
+interface MCPRateWindow {
+  minute_count: number;
+  minute_start: number;
+  hour_count: number;
+  hour_start: number;
+}
+
+const TOOL_SCOPES: Record<string, MCPScope[]> = {
+  gtom_ingest: ['write'],
+  gtom_score: ['write'],
+  gtom_audit: ['read'],
+  gtom_vulnerabilities: ['read'],
+  gtom_health: ['read'],
+  gtom_get_receipts: ['read'],
+  gtom_get_drift: ['read'],
+  get_drift: ['read'],
+  gtom_get_cost_stats: ['read'],
+  gtom_authenticity_history: ['read'],
+  gtom_get_authenticity_history: ['read'],
+  get_authenticity_history: ['read'],
+  gtom_get_indicators: ['read'],
+  get_indicators: ['read'],
+};
 
 /**
  * MCP Server for GToM
@@ -17,7 +47,10 @@ class GToMMCPServer {
   private server: Server;
   private gtom: GToM;
   private authMiddleware: any;
-  private rateLimiter: AuthRateLimiter;
+  private rateUsage = new Map<string, MCPRateWindow>();
+  private readonly authRequired: boolean;
+  private readonly rateLimitRpm: number;
+  private readonly rateLimitRph: number;
 
   constructor() {
     this.server = new Server(
@@ -42,10 +75,9 @@ class GToMMCPServer {
       defaultRoles: ['read', 'write'],
     });
 
-    // Initialize rate limiter
-    const rpm = parseInt(process.env.GTOM_RATE_LIMIT_RPM || '60', 10);
-    const rph = parseInt(process.env.GTOM_RATE_LIMIT_RPH || '1000', 10);
-    this.rateLimiter = new AuthRateLimiter({ rpm, rph });
+    this.authRequired = process.env.GTOM_MCP_AUTH_REQUIRED === 'true';
+    this.rateLimitRpm = parseInt(process.env.GTOM_RATE_LIMIT_RPM || '60', 10);
+    this.rateLimitRph = parseInt(process.env.GTOM_RATE_LIMIT_RPH || '1000', 10);
 
     this.setupHandlers();
   }
@@ -175,6 +207,19 @@ class GToMMCPServer {
             },
           },
           {
+            name: 'get_drift',
+            description: 'Alias for gtom_get_drift',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                metricName: {
+                  type: 'string',
+                  description: 'Specific metric name to check (optional)',
+                },
+              },
+            },
+          },
+          {
             name: 'gtom_get_cost_stats',
             description: 'Get cost statistics from the cost ledger',
             inputSchema: {
@@ -195,6 +240,58 @@ class GToMMCPServer {
               },
             },
           },
+          {
+            name: 'gtom_get_authenticity_history',
+            description: 'Get history of authenticity scores',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of history entries to return',
+                },
+              },
+            },
+          },
+          {
+            name: 'get_authenticity_history',
+            description: 'Alias for gtom_get_authenticity_history',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of history entries to return',
+                },
+              },
+            },
+          },
+          {
+            name: 'gtom_get_indicators',
+            description: 'Get current manipulation and vulnerability indicators',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of influence events to return',
+                },
+              },
+            },
+          },
+          {
+            name: 'get_indicators',
+            description: 'Alias for gtom_get_indicators',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                limit: {
+                  type: 'number',
+                  description: 'Maximum number of influence events to return',
+                },
+              },
+            },
+          },
         ],
       };
     });
@@ -203,42 +300,14 @@ class GToMMCPServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
-      // Authentication check (for MVP, this is a no-op since stdio servers authenticate at process level)
-      // In production with HTTP transport, this would validate the Authorization header
-      const authHeaderRaw = request.params._meta?.authorization;
-      const authHeader = typeof authHeaderRaw === "string" ? authHeaderRaw : "";
-      let token: string | null = null;
-      if (authHeader) {
-        const auth = this.authMiddleware.authenticate(authHeader);
-        if (!auth.success) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Authentication failed: ${auth.error}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-        // Extract token from Authorization header (Bearer <token>)
-        token = authHeader.replace('Bearer ', '');
+      const access = this.authorize(name, request.params._meta as Record<string, unknown> | undefined);
+      if (!access.ok) {
+        return this.errorResponse(access.error);
       }
 
-      // Rate limit check (skip for dev mode without token)
-      if (token) {
-        const rateLimitResult = await this.rateLimiter.checkRateLimit(token);
-        if (!rateLimitResult.allowed) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Rate limit exceeded. Reset at ${rateLimitResult.reset_at}`,
-              },
-            ],
-            isError: true,
-          };
-        }
+      const rateLimit = this.checkRateLimit(access.context.token);
+      if (!rateLimit.allowed) {
+        return this.errorResponse(`Rate limit exceeded. Reset at ${rateLimit.reset_at}`);
       }
 
       try {
@@ -256,26 +325,139 @@ class GToMMCPServer {
           case 'gtom_get_receipts':
             return await this.handleGetReceipts(args as any);
           case 'gtom_get_drift':
+          case 'get_drift':
             return await this.handleGetDrift(args as any);
           case 'gtom_get_cost_stats':
             return await this.handleGetCostStats();
           case 'gtom_authenticity_history':
+          case 'gtom_get_authenticity_history':
+          case 'get_authenticity_history':
             return await this.handleAuthenticityHistory(args as any);
+          case 'gtom_get_indicators':
+          case 'get_indicators':
+            return await this.handleGetIndicators(args as any);
           default:
             throw new Error(`Unknown tool: ${name}`);
         }
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-          isError: true,
-        };
+        return this.errorResponse(`Error: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
+  }
+
+  private authorize(toolName: string, meta?: Record<string, unknown>): { ok: true; context: MCPAccessContext } | { ok: false; error: string } {
+    const authHeader = this.getAuthHeader(meta);
+    if (!authHeader && !this.authRequired) {
+      return { ok: true, context: { token: 'anonymous-dev-stdio', scopes: ['read', 'write'] } };
+    }
+    if (!authHeader) {
+      return { ok: false, error: 'Authentication failed: missing authorization token' };
+    }
+
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    const envScopes = this.scopesForConfiguredToken(token);
+    let scopes = envScopes;
+    if (!scopes) {
+      const auth = this.authMiddleware.authenticate(authHeader);
+      if (!auth.success) {
+        return { ok: false, error: `Authentication failed: ${auth.error}` };
+      }
+      scopes = this.normalizeScopes(auth.token?.roles ?? []);
+    }
+
+    const requiredScopes = TOOL_SCOPES[toolName] ?? ['read'];
+    if (!this.hasScopes(scopes, requiredScopes)) {
+      return { ok: false, error: `Authorization failed: ${toolName} requires ${requiredScopes.join(', ')} scope` };
+    }
+
+    return { ok: true, context: { token, scopes } };
+  }
+
+  private getAuthHeader(meta?: Record<string, unknown>): string {
+    const auth = meta?.authorization ?? meta?.gtom_authorization;
+    if (typeof auth === 'string') return auth;
+    const token = meta?.token ?? meta?.gtom_token;
+    return typeof token === 'string' ? `Bearer ${token}` : '';
+  }
+
+  private scopesForConfiguredToken(token: string): MCPScope[] | null {
+    const configured: Array<[string | undefined, MCPScope[]]> = [
+      [process.env.GTOM_MCP_ADMIN_TOKEN, ['admin']],
+      [process.env.GTOM_MCP_WRITE_TOKEN, ['read', 'write']],
+      [process.env.GTOM_MCP_READ_TOKEN, ['read']],
+    ];
+    for (const [configuredToken, scopes] of configured) {
+      if (configuredToken && token === configuredToken) return scopes;
+    }
+    return null;
+  }
+
+  private normalizeScopes(scopes: string[]): MCPScope[] {
+    const result = scopes.filter((scope): scope is MCPScope => ['read', 'write', 'admin'].includes(scope));
+    return result.length > 0 ? result : ['read'];
+  }
+
+  private hasScopes(scopes: MCPScope[], requiredScopes: MCPScope[]): boolean {
+    if (scopes.includes('admin')) return true;
+    return requiredScopes.every((scope) => {
+      if (scope === 'read') return scopes.includes('read') || scopes.includes('write');
+      return scopes.includes(scope);
+    });
+  }
+
+  private checkRateLimit(token: string): { allowed: boolean; remaining: number; reset_at: string } {
+    const now = Date.now();
+    const minuteWindow = 60 * 1000;
+    const hourWindow = 60 * 60 * 1000;
+    const current = this.rateUsage.get(token) ?? {
+      minute_count: 0,
+      minute_start: now,
+      hour_count: 0,
+      hour_start: now,
+    };
+
+    if (now - current.minute_start >= minuteWindow) {
+      current.minute_count = 0;
+      current.minute_start = now;
+    }
+    if (now - current.hour_start >= hourWindow) {
+      current.hour_count = 0;
+      current.hour_start = now;
+    }
+
+    const minuteExceeded = current.minute_count >= this.rateLimitRpm;
+    const hourExceeded = current.hour_count >= this.rateLimitRph;
+    if (minuteExceeded || hourExceeded) {
+      const resetAt = hourExceeded
+        ? current.hour_start + hourWindow
+        : current.minute_start + minuteWindow;
+      return {
+        allowed: false,
+        remaining: 0,
+        reset_at: new Date(resetAt).toISOString(),
+      };
+    }
+
+    current.minute_count++;
+    current.hour_count++;
+    this.rateUsage.set(token, current);
+    return {
+      allowed: true,
+      remaining: Math.min(this.rateLimitRpm - current.minute_count, this.rateLimitRph - current.hour_count),
+      reset_at: new Date(current.minute_start + minuteWindow).toISOString(),
+    };
+  }
+
+  private errorResponse(message: string) {
+    return {
+      content: [
+        {
+          type: 'text',
+          text: message,
+        },
+      ],
+      isError: true,
+    };
   }
 
   private async handleGetReceipts(args: {
@@ -332,6 +514,37 @@ class GToMMCPServer {
         {
           type: 'text',
           text: JSON.stringify(history, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleGetIndicators(args: {
+    limit?: number;
+  }) {
+    const limit = args.limit || 25;
+    const vulnerabilities = this.gtom.getVulnerabilities();
+    const influenceLedger = this.gtom.getInfluenceLedger(limit);
+    const indicators = vulnerabilities
+      .filter((vulnerability) => vulnerability.current_level > vulnerability.baseline_level)
+      .map((vulnerability) => ({
+        category: vulnerability.category,
+        current_level: vulnerability.current_level,
+        baseline_level: vulnerability.baseline_level,
+        delta: vulnerability.current_level - vulnerability.baseline_level,
+        evidence_count: vulnerability.evidence_count,
+        recent_exposures: vulnerability.recent_exposures,
+      }));
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            aggregate: this.gtom.getAggregateVulnerability(),
+            indicators,
+            influence_ledger: influenceLedger,
+          }, null, 2),
         },
       ],
     };
