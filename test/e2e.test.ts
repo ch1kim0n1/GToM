@@ -21,8 +21,8 @@ describe('GToM E2E (mocked)', () => {
     expect(authenticityScorer).toBeDefined();
   });
 
-  it('processes observation and updates vulnerability', () => {
-    vulnerabilityManager.processObservation({
+  it('processes observation and updates vulnerability', async () => {
+    await vulnerabilityManager.processObservation({
       content: 'This is expert advice',
       surface: 'notification',
       source: 'user_input'
@@ -56,9 +56,9 @@ describe('GToM E2E (mocked)', () => {
     expect(score.manipulation_indicators).toHaveLength(0);
   });
 
-  it('full flow: observe, track vulnerability', () => {
+  it('full flow: observe, track vulnerability', async () => {
     // Process observation
-    vulnerabilityManager.processObservation({
+    await vulnerabilityManager.processObservation({
       content: 'Only 2 left! Limited time offer!',
       surface: 'notification',
       source: 'external_signal'

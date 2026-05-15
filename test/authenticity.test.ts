@@ -104,4 +104,43 @@ describe('AuthenticityScorer', () => {
 
     expect(result.manipulation_indicators.length).toBeGreaterThan(0);
   });
+
+  it('uses injected LLM reasoning for authenticity scoring', async () => {
+    const llmClient = {
+      call: jest.fn().mockResolvedValue({
+        content: JSON.stringify({
+          authenticity_score: 0.82,
+          confidence: 0.91,
+          factors: {
+            self_alignment: 0.9,
+            external_pressure: 0.1,
+            time_pressure: 0.1,
+            information_completeness: 0.8,
+            emotional_state_impact: 0.2,
+          },
+          manipulation_indicators: [],
+          reasoning: 'The action is consistent with the stated context and low pressure.',
+        }),
+        input_tokens: 100,
+        output_tokens: 80,
+        model_id: 'test-model',
+        cost_usd: 0.001,
+        latency_ms: 5,
+      }),
+    };
+    scorer = new AuthenticityScorer({ llmClient });
+
+    const result = await scorer.scoreDecision({
+      context: 'I compared options and selected the one that fits my workflow',
+      action: 'purchase',
+      vulnerabilities: [],
+      cognitiveState: makeCognitiveState(),
+      recentInfluences: [],
+    });
+
+    expect(llmClient.call).toHaveBeenCalledTimes(1);
+    expect(result.authenticity_score).toBe(0.82);
+    expect(result.confidence).toBe(0.91);
+    expect(result.factors.self_alignment).toBe(0.9);
+  });
 });

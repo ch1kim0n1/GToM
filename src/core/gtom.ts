@@ -128,7 +128,7 @@ export class GToM {
       throw new Error('Budget exceeded: cannot score decision authenticity');
     }
     
-    const result = this.authenticityScorer.scoreDecision({
+    const result = await this.authenticityScorer.scoreDecision({
       ...decision,
       vulnerabilities: this.vulnerabilityManager.getVulnerabilities(),
       cognitiveState: this.vulnerabilityManager.getCurrentCognitiveState() ?? {
@@ -237,7 +237,7 @@ export class GToM {
     // Check authenticityScorer
     const asStart = performance.now();
     try {
-      this.authenticityScorer.scoreDecision({
+      await this.authenticityScorer.scoreDecision({
         context: 'test',
         action: 'test',
         vulnerabilities: [],
