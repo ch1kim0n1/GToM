@@ -3,6 +3,7 @@ import * as path from 'path';
 import { AuthenticityScorer } from '../src/core/authenticity.js';
 import { ReceiptRegistry, compareReceiptRegression, RegressionToleranceConfig } from '../src/core/receipt-registry.js';
 import { GTOM_RUBRIC_V1 } from '../src/core/gtom-rubric.js';
+import { CURRENT_RECEIPT_SCHEMA_VERSION } from '../src/core/versioning.js';
 import { Vulnerability, CognitiveState } from '../src/types/index.js';
 import { ExecutionReceipt } from '../src/types/quality-rubric.js';
 
@@ -57,7 +58,7 @@ describe('AuthenticityScorer Baseline Regression Tests', () => {
     expect(latest).toBeDefined();
     expect(latest?.rubric_name).toBe('gtom_v1');
     expect(latest?.project).toBe('gtom');
-    expect(latest?.schema_version).toBe(1);
+    expect(latest?.schema_version).toBe(CURRENT_RECEIPT_SCHEMA_VERSION);
   });
 
   it('receipt scores match rubric dimensions', async () => {

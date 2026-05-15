@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, afterEach } from '@jest/globals';
 import { GToM } from '../src/core/gtom.js';
 import { ExecutionReceipt } from '../src/types/quality-rubric.js';
+import { CURRENT_RECEIPT_SCHEMA_VERSION } from '../src/core/versioning.js';
 
 const tempDirs: string[] = [];
 
@@ -35,7 +36,7 @@ describe('GToM health checks', () => {
     }
 
     expect(health.find((check) => check.service === 'sync_freshness')?.healthy).toBe(true);
-    expect(health.find((check) => check.service === 'schema_version')?.details?.version).toBe(1);
+    expect(health.find((check) => check.service === 'schema_version')?.details?.version).toBe(CURRENT_RECEIPT_SCHEMA_VERSION);
     expect(health.find((check) => check.service === 'overall_health')?.score).toBeGreaterThanOrEqual(0.9);
   });
 

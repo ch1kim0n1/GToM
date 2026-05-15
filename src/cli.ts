@@ -3,12 +3,14 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { GToM } from './core/gtom.js';
 import {
   ReceiptRegistry,
   RegressionToleranceConfig,
   compareReceiptRegression,
   diffReceipts,
+  migrateReceiptToVersion,
   readReceiptFile,
 } from './core/receipt-registry.js';
 import {
@@ -24,6 +26,11 @@ import {
   sanitizeUrl,
   sanitizeUserString,
 } from './core/input-sanitizer.js';
+import {
+  API_STABILITY,
+  CURRENT_RECEIPT_SCHEMA_VERSION,
+  getVersionMetadata,
+} from './core/versioning.js';
 
 const program = new Command();
 const DEFAULT_GBRAIN_ENDPOINT = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
@@ -181,7 +188,7 @@ function generateCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const commands = [
     'ingest', 'score', 'audit', 'vulnerabilities', 'health', 'eval', 'replay',
     'regress', 'receipts', 'diff', 'trend', 'drift', 'decay', 'reset', 'cost',
-    'metrics', 'backup', 'restore', 'export', 'secrets', 'completion',
+    'metrics', 'backup', 'restore', 'export', 'migrate', 'secrets', 'completion',
   ];
   const options = [
     '--json', '--quiet', '--cycles', '--budget-usd', '--gbrain', '--help',
@@ -233,6 +240,25 @@ program
   .name('gtom')
   .description('Cognitive defense and Theory of Mind system')
   .version('0.1.0');
+
+program
+  .command('version-info')
+  .description('Print package, schema, rubric, and API stability metadata')
+  .option('--json', 'Output as JSON')
+  .action((options) => {
+    const metadata = getVersionMetadata();
+    if (options.json) {
+      console.log(JSON.stringify(metadata, null, 2));
+    } else {
+      console.log(chalk.blue.bold('[GToM] Version metadata'));
+      console.log(chalk.gray(`Package: ${metadata.package_version}`));
+      console.log(chalk.gray(`Receipt schema: v${metadata.receipt_schema_version}`));
+      console.log(chalk.gray(`CLI stability: ${API_STABILITY.cli.level}`));
+      console.log(chalk.gray(`HTTP stability: ${API_STABILITY.http.level}`));
+      console.log(chalk.gray(`MCP stability: ${API_STABILITY.mcp.level}`));
+    }
+    process.exit(0);
+  });
 
 // Ingest observation
 program
@@ -1297,6 +1323,71 @@ program
       process.exit(0);
     } catch (error) {
       console.error(chalk.red('[GToM] Export failed:'), error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('migrate')
+  .description('Migrate receipt JSONL files between supported schema versions')
+  .requiredOption('--from <version>', 'Source receipt schema version')
+  .requiredOption('--to <version>', 'Target receipt schema version')
+  .requiredOption('--input <path>', 'Input receipt JSONL file')
+  .option('--output <path>', 'Output receipt JSONL file')
+  .option('--dry-run', 'Validate and summarize without writing output')
+  .option('--json', 'Output as JSON')
+  .action(async (options) => {
+    try {
+      const from = Number(options.from);
+      const to = Number(options.to);
+      if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 1) {
+        throw new Error('--from and --to must be schema version integers');
+      }
+      if (to > CURRENT_RECEIPT_SCHEMA_VERSION) {
+        throw new Error(`Target schema v${to} is not supported by this GToM build; current is v${CURRENT_RECEIPT_SCHEMA_VERSION}`);
+      }
+
+      const input = sanitizePath(options.input, '--input');
+      const output = options.output
+        ? sanitizePath(options.output, '--output')
+        : `${input}.v${to}`;
+      const content = await fs.readFile(input, 'utf8');
+      const lines = content.split('\n').filter(Boolean);
+      const migrated = lines.map((line, index) => {
+        const parsed = JSON.parse(line);
+        const version = parsed.schema_version ?? 0;
+        if (version !== from) {
+          throw new Error(`Line ${index + 1} has schema_version ${version}; expected ${from}`);
+        }
+        return migrateReceiptToVersion(parsed, to);
+      });
+
+      const result = {
+        from,
+        to,
+        input,
+        output,
+        receipts: migrated.length,
+        dry_run: Boolean(options.dryRun),
+      };
+      if (!options.dryRun) {
+        await fs.mkdir(path.dirname(output), { recursive: true });
+        await fs.writeFile(output, `${migrated.map((receipt) => JSON.stringify(receipt)).join('\n')}\n`, 'utf8');
+      }
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(chalk.green(`[GToM] Migrated ${migrated.length} receipt(s) from schema v${from} to v${to}`));
+        if (options.dryRun) {
+          console.log(chalk.gray('Dry run: no output written'));
+        } else {
+          console.log(chalk.gray(`Output: ${output}`));
+        }
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Schema migration failed:'), error);
       process.exit(1);
     }
   });

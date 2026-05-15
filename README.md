@@ -58,8 +58,24 @@ gtom backup --output-dir ./.gtom/backups --json
 | `backup` | Create a rotated persistence backup. |
 | `restore` | Restore a persistence backup. |
 | `export` | Export persistence data as JSON. |
+| `migrate` | Migrate receipt JSONL files between supported schema versions. |
+| `version-info` | Print package, schema, rubric, and API stability metadata. |
 | `gbrain-sync` | Run gstack-compatible GBrain source sync for GToM and sibling tools. |
 | `completion` | Print shell completion scripts. |
+
+## Versioning
+
+GToM follows SemVer for the published CLI, HTTP, MCP, receipt, and rubric surfaces:
+
+- Patch releases fix bugs without changing public contracts.
+- Minor releases add backward-compatible commands, endpoints, fields, or rubric dimensions.
+- Major releases remove deprecated surfaces or introduce incompatible schema/rubric changes.
+
+Release tags use `gtom-vMAJOR.MINOR.PATCH`, for example `gtom-v0.1.0`. API stability is tracked in code via `gtom version-info --json` and documented in [Versioning](docs/VERSIONING.md). Receipt schema migrations are explicit; migrate v1 receipts to the current schema with:
+
+```bash
+gtom migrate --from 1 --to 2 --input ./receipts-v1.jsonl --output ./receipts-v2.jsonl
+```
 
 ## HTTP
 
@@ -88,6 +104,7 @@ See [docs/MCP_CONTRACT.md](docs/MCP_CONTRACT.md) for the tool list, auth scopes,
 - [Migrations](MIGRATIONS.md)
 - [Operations](OPERATIONS.md)
 - [Testing](TESTING.md)
+- [Versioning](docs/VERSIONING.md)
 - [Runbook](docs/RUNBOOK.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Security model](docs/SECURITY_MODEL.md)

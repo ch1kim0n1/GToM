@@ -11,6 +11,7 @@ import { GTOM_RUBRIC_V1, authenticityToLevel, getRubricHash } from './gtom-rubri
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import { LLMClient, LLMCallResult } from './llm-client.js';
 import { globalObservability } from './observability.js';
+import { API_STABILITY, CURRENT_RECEIPT_SCHEMA_VERSION } from './versioning.js';
 
 type DecisionInput = {
   context: string;
@@ -123,7 +124,7 @@ export class AuthenticityScorer {
     // Emit execution receipt for quality tracking (fire-and-forget).
     const receipt: ExecutionReceipt = {
       receipt_id: uuidv4(),
-      schema_version: 1,
+      schema_version: CURRENT_RECEIPT_SCHEMA_VERSION,
       timestamp: new Date().toISOString(),
       project: 'gtom' as const,
       rubric_name: GTOM_RUBRIC_V1.name,
@@ -141,6 +142,8 @@ export class AuthenticityScorer {
       metadata: {
         decision_id: decisionId,
         score_id: scoreId,
+        api_stability: API_STABILITY.receipts.level,
+        rubric_version: GTOM_RUBRIC_V1.name,
         rubric_level: authenticityToLevel(assessment.authenticity_score),
         manipulation_indicators: assessment.manipulation_indicators,
         reasoning: assessment.reasoning,

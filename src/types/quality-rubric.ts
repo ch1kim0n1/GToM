@@ -25,7 +25,7 @@ export type RubricFramework = z.infer<typeof RubricFrameworkSchema>;
 
 export const ExecutionReceiptSchema = z.object({
   receipt_id: z.string().uuid(),
-  schema_version: z.literal(1),
+  schema_version: z.union([z.literal(1), z.literal(2)]),
   timestamp: z.string().datetime(),
   project: z.enum(['gmirror', 'gorchestrator', 'gtom', 'gagent', 'glearn']),
   rubric_name: z.string(),  // e.g., 'gmirror_v1'

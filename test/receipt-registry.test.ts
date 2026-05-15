@@ -5,9 +5,11 @@ import {
   ReceiptRegistry,
   compareReceiptRegression,
   diffReceipts,
+  migrateReceiptToVersion,
   readReceiptFile,
 } from '../src/core/receipt-registry.js';
 import { ExecutionReceipt } from '../src/types/quality-rubric.js';
+import { CURRENT_RECEIPT_SCHEMA_VERSION } from '../src/core/versioning.js';
 
 function makeReceipt(overrides: Partial<ExecutionReceipt> = {}): ExecutionReceipt {
   return {
@@ -56,6 +58,7 @@ describe('ReceiptRegistry audit behavior', () => {
     expect(receiptFile).toBeDefined();
     const fromFile = await readReceiptFile(path.join(baseDir, receiptFile!), 'test-secret');
     expect(fromFile.receipt_id).toBe(latest?.receipt_id);
+    expect(fromFile.schema_version).toBe(CURRENT_RECEIPT_SCHEMA_VERSION);
   });
 
   it('rejects tampered signed receipts', async () => {
@@ -86,6 +89,27 @@ describe('ReceiptRegistry audit behavior', () => {
     const matches = await registry.getByCorpusSha8('12345678');
     expect(matches).toHaveLength(1);
     expect(matches[0].receipt_id).toBe('11111111-1111-4111-8111-111111111111');
+  });
+
+  it('migrates schema_version=1 receipts forward without changing score semantics', () => {
+    const legacy = makeReceipt({
+      schema_version: 1,
+      metadata: { corpus_sha8: '12345678' },
+    });
+    const migrated = migrateReceiptToVersion(legacy, 2, '2026-05-15T00:00:00.000Z');
+
+    expect(migrated.schema_version).toBe(2);
+    expect(migrated.overall_score).toBe(legacy.overall_score);
+    expect(migrated.scores).toEqual(legacy.scores);
+    expect(migrated.metadata?.api_stability).toBe('stable');
+    expect(migrated.metadata?.rubric_version).toBe('gtom_v1');
+    expect(migrated.metadata?.schema_history).toEqual([
+      {
+        from: 1,
+        to: 2,
+        migrated_at: '2026-05-15T00:00:00.000Z',
+      },
+    ]);
   });
 
   it('archives receipts older than four weeks', async () => {

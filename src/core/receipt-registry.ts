@@ -6,8 +6,13 @@ import { Pool } from 'pg';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import { globalObservability } from './observability.js';
 import { defaultSecretManager } from './secret-manager.js';
+import {
+  API_STABILITY,
+  CURRENT_RECEIPT_SCHEMA_VERSION,
+  RECEIPT_SCHEMA_MIGRATIONS,
+  isSupportedReceiptSchemaVersion,
+} from './versioning.js';
 
-const CURRENT_SCHEMA_VERSION = 1;
 const DEFAULT_RECEIPT_TTL_DAYS = 365;
 const DEFAULT_ARCHIVE_AFTER_DAYS = 28;
 const SIGNATURE_FIELDS = new Set([
@@ -132,7 +137,7 @@ export class ReceiptRegistry {
   private baseDir: string;
   private schemaPath: string;
   private week: string;  // ISO week YYYY-Www
-  private readonly schemaVersion = CURRENT_SCHEMA_VERSION;
+  private readonly schemaVersion = CURRENT_RECEIPT_SCHEMA_VERSION;
   private readonly hmacSecret: string;
   private readonly ttlDays: number;
   private readonly archiveAfterDays: number;
@@ -181,6 +186,7 @@ export class ReceiptRegistry {
           expected_version: this.schemaVersion,
           actual_version: existingSchema.version,
         });
+        await this.writeSchema(existingSchema.created_at);
       }
       
       if (!existingSchema) {
@@ -205,18 +211,12 @@ export class ReceiptRegistry {
     }
   }
 
-  private async writeSchema(): Promise<void> {
+  private async writeSchema(createdAt = new Date().toISOString()): Promise<void> {
     const schema = {
       version: this.schemaVersion,
       current_schema_version: this.schemaVersion,
-      migrations: [
-        {
-          from: 0,
-          to: 1,
-          description: 'Normalize legacy receipts into execution receipt schema v1 and preserve audit metadata.',
-        },
-      ],
-      created_at: new Date().toISOString(),
+      migrations: RECEIPT_SCHEMA_MIGRATIONS,
+      created_at: createdAt,
     };
     await fs.writeFile(this.schemaPath, JSON.stringify(schema, null, 2), 'utf8');
   }
@@ -360,9 +360,11 @@ export class ReceiptRegistry {
     const expiresAt = new Date(new Date(receipt.timestamp).getTime() + this.ttlDays * 24 * 60 * 60 * 1000).toISOString();
     const enriched: ExecutionReceipt = {
       ...receipt,
-      schema_version: CURRENT_SCHEMA_VERSION,
+      schema_version: CURRENT_RECEIPT_SCHEMA_VERSION,
       metadata: {
         ...receipt.metadata,
+        api_stability: receipt.metadata?.api_stability ?? API_STABILITY.receipts.level,
+        rubric_version: receipt.metadata?.rubric_version ?? receipt.rubric_name,
         corpus_sha8: receipt.metadata?.corpus_sha8 ?? receipt.input_hash.substring(0, 8),
         receipt_expires_at: expiresAt,
         receipt_signed_at: new Date().toISOString(),
@@ -379,8 +381,9 @@ export class ReceiptRegistry {
   }
 
   private parseReceiptLine(line: string): ExecutionReceipt {
-    const receipt = migrateReceipt(JSON.parse(line));
-    verifyReceiptSignature(receipt, this.hmacSecret);
+    const parsed = JSON.parse(line);
+    verifyReceiptSignature(parsed, this.hmacSecret);
+    const receipt = migrateReceipt(parsed);
     return markExpiration(receipt);
   }
 
@@ -474,36 +477,49 @@ export async function readReceiptFile(receiptPath: string, hmacSecret = process.
     throw new Error(`Receipt file is empty: ${receiptPath}`);
   }
   const firstLine = trimmed.split('\n').filter(Boolean)[0];
-  const receipt = migrateReceipt(JSON.parse(firstLine));
-  verifyReceiptSignature(receipt, hmacSecret);
+  const parsed = JSON.parse(firstLine);
+  verifyReceiptSignature(parsed, hmacSecret);
+  const receipt = migrateReceipt(parsed);
   return markExpiration(receipt);
 }
 
 export function migrateReceipt(raw: any): ExecutionReceipt {
+  return migrateReceiptToVersion(raw, CURRENT_RECEIPT_SCHEMA_VERSION);
+}
+
+export function migrateReceiptToVersion(raw: any, targetVersion: number = CURRENT_RECEIPT_SCHEMA_VERSION, migratedAt = new Date().toISOString()): ExecutionReceipt {
   if (!raw || typeof raw !== 'object') {
     throw new Error('Invalid receipt payload');
   }
 
-  const version = raw.schema_version ?? 0;
-  if (version === CURRENT_SCHEMA_VERSION) {
-    return raw as ExecutionReceipt;
-  }
-  if (version > CURRENT_SCHEMA_VERSION) {
-    throw new Error(`Unsupported receipt schema_version ${version}`);
+  if (!isSupportedReceiptSchemaVersion(targetVersion)) {
+    throw new Error(`Unsupported target receipt schema_version ${targetVersion}`);
   }
 
-  return {
-    ...raw,
-    schema_version: CURRENT_SCHEMA_VERSION,
-    metadata: {
-      ...(raw.metadata ?? {}),
-      schema_migration: {
-        from: version,
-        to: CURRENT_SCHEMA_VERSION,
-        migrated_at: new Date().toISOString(),
-      },
-    },
-  } as ExecutionReceipt;
+  let receipt = { ...raw };
+  let version = receipt.schema_version ?? 0;
+  if (version > CURRENT_RECEIPT_SCHEMA_VERSION) {
+    throw new Error(`Unsupported receipt schema_version ${version}`);
+  }
+  if (version > targetVersion) {
+    throw new Error(`Downgrading receipt schema_version ${version} to ${targetVersion} is not supported`);
+  }
+
+  while (version < targetVersion) {
+    if (version === 0) {
+      receipt = migrateReceiptFrom0To1(receipt, migratedAt);
+      version = 1;
+      continue;
+    }
+    if (version === 1) {
+      receipt = migrateReceiptFrom1To2(receipt, migratedAt);
+      version = 2;
+      continue;
+    }
+    throw new Error(`No migration path from receipt schema_version ${version} to ${targetVersion}`);
+  }
+
+  return receipt as ExecutionReceipt;
 }
 
 export function verifyReceiptSignature(receipt: ExecutionReceipt, hmacSecret = process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret'): boolean {
@@ -684,6 +700,59 @@ function stripSignatureMetadata(receipt: ExecutionReceipt): ExecutionReceipt {
     ...receipt,
     metadata,
   };
+}
+
+function migrateReceiptFrom0To1(raw: any, migratedAt: string): any {
+  return {
+    ...raw,
+    schema_version: 1,
+    metadata: {
+      ...(raw.metadata ?? {}),
+      schema_history: [
+        ...schemaHistory(raw),
+        {
+          from: 0,
+          to: 1,
+          migrated_at: migratedAt,
+        },
+      ],
+    },
+  };
+}
+
+function migrateReceiptFrom1To2(raw: any, migratedAt: string): any {
+  const metadata = { ...(raw.metadata ?? {}) };
+  const legacySignature = metadata.receipt_signature;
+  for (const key of SIGNATURE_FIELDS) {
+    delete metadata[key];
+  }
+
+  return {
+    ...raw,
+    schema_version: 2,
+    metadata: {
+      ...metadata,
+      ...(legacySignature ? { legacy_receipt_signature: legacySignature } : {}),
+      api_stability: metadata.api_stability ?? API_STABILITY.receipts.level,
+      rubric_version: metadata.rubric_version ?? raw.rubric_name,
+      schema_history: [
+        ...schemaHistory(raw),
+        {
+          from: 1,
+          to: 2,
+          migrated_at: migratedAt,
+        },
+      ],
+    },
+  };
+}
+
+function schemaHistory(raw: any): Array<Record<string, unknown>> {
+  return Array.isArray(raw.metadata?.schema_history)
+    ? raw.metadata.schema_history
+    : raw.metadata?.schema_migration
+      ? [raw.metadata.schema_migration]
+      : [];
 }
 
 function stableStringify(value: unknown): string {

@@ -46,6 +46,18 @@ export type { AccessScope, PermissionRole, AccessPrincipal, RateLimitResult } fr
 export { sanitizeIdentifier, sanitizeJsonValue, sanitizePath, sanitizeUrl, sanitizeUserString } from './input-sanitizer.js';
 export type { SanitizeStringOptions } from './input-sanitizer.js';
 export {
+  API_STABILITY,
+  CURRENT_RECEIPT_SCHEMA_VERSION,
+  GTOM_PACKAGE_VERSION,
+  RECEIPT_SCHEMA_MIGRATIONS,
+  RELEASE_TAG_PREFIX,
+  RUBRIC_VERSION_MIGRATIONS,
+  SUPPORTED_RECEIPT_SCHEMA_VERSIONS,
+  getVersionMetadata,
+  isSupportedReceiptSchemaVersion,
+} from './versioning.js';
+export type { ApiStabilityLevel, ApiSurfaceStability, SchemaMigrationRecord } from './versioning.js';
+export {
   BackpressureController,
   CancellationToken,
   LRUCache,
