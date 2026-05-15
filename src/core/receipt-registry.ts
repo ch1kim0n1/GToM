@@ -254,6 +254,29 @@ export class ReceiptRegistry {
     return receipts.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())[0];
   }
 
+  async getSchemaMetadata(): Promise<{
+    version: number;
+    current_schema_version: number;
+    created_at: string;
+    migrations: Array<{ from: number; to: number; description: string }>;
+  }> {
+    await this.initPromise;
+    const schema = await this.readSchema();
+    if (!schema) {
+      throw new Error('Receipt schema metadata is missing');
+    }
+    return {
+      version: schema.version,
+      current_schema_version: this.schemaVersion,
+      created_at: schema.created_at,
+      migrations: Array.isArray((schema as any).migrations) ? (schema as any).migrations : [],
+    };
+  }
+
+  getAppendQueueDepth(): number {
+    return ReceiptRegistry.appendQueues.has(this.basePath) ? 1 : 0;
+  }
+
   async getAllBetween(start: Date, end: Date): Promise<ExecutionReceipt[]> {
     await this.initPromise;
     const receipts = await this.readAllReceipts();
