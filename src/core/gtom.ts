@@ -166,19 +166,16 @@ export class GToM {
     this.latencyTracker.record(performance.now() - start);
     return result;
   }
-    // Check budget before execution
-    const budget = this.costLedger.getBudget();
-    if (budget.available_usd < 0) {
-      throw new Error('Budget exceeded: cannot predict conflicts');
-    }
-    
-    
 
   /**
    * Predict conflict for GOrchestrator escalation
    */
   async predictConflict(request: ConflictPredictionRequest): Promise<ConflictPredictionResponse> {
     const start = performance.now();
+    const budget = this.costLedger.getBudget();
+    if (budget.available_usd < 0) {
+      throw new Error('Budget exceeded: cannot predict conflicts');
+    }
     const result = this.conflictPredictor.predictConflicts(request);
     this.latencyTracker.record(performance.now() - start);
     return result;

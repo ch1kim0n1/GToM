@@ -264,22 +264,26 @@ program
     });
 
     const health = await gtom.healthCheck();
+    const components = Object.fromEntries(
+      health.map((check) => [check.service, check.healthy ? 'ok' : 'error'])
+    ) as Record<string, 'ok' | 'error'>;
+    const status = health.every((check) => check.healthy) ? 'healthy' : 'unhealthy';
 
     if (options.json) {
-      console.log(JSON.stringify(health, null, 2));
+      console.log(JSON.stringify({ status, components, checks: health }, null, 2));
     } else if (!options.quiet) {
       console.log(chalk.bold('GToM Health Check'));
-      console.log(chalk.gray(`Status: ${health.status}`));
+      console.log(chalk.gray(`Status: ${status}`));
       console.log('');
       console.log('Components:');
-      console.log(`  Vulnerability Manager: ${health.components.vulnerabilityManager === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  Authenticity Scorer: ${health.components.authenticityScorer === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  Cognitive ICE: ${health.components.cognitiveICE === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  Conflict Predictor: ${health.components.conflictPredictor === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
-      console.log(`  GBrain: ${health.components.gbrain === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Vulnerability Manager: ${components.vulnerabilityManager === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Authenticity Scorer: ${components.authenticityScorer === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Cognitive ICE: ${components.cognitiveICE === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  Conflict Predictor: ${components.conflictPredictor === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
+      console.log(`  GBrain: ${components.gbrain === 'ok' ? chalk.green('✓') : chalk.red('✗')}`);
     }
 
-    process.exit(health.status === 'healthy' ? 0 : 1);
+    process.exit(status === 'healthy' ? 0 : 1);
   });
 
 // Eval command
@@ -290,7 +294,7 @@ program
   .option('--cycles <number>', 'Number of cycles to run', '1')
   .option('--gbrain <url>', 'GBrain endpoint', 'http://localhost:3000')
   .option('-o, --output <path>', 'Write output to file (JSON format)')
-  .option('--json', 'Output as JSON to stdout')
+  .option('--json', 'Output as JSON')
   .option('--quiet', 'Suppress output for CI use')
   .action(async (options) => {
     if (!options.quiet) {

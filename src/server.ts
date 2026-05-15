@@ -9,7 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import { GToM } from './core/gtom';
-import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
+import { StructuredLogger } from '../../shared/src/observability/structured-logger.js';
 
 export interface ConflictPredictionRequest {
   task: string;
@@ -184,7 +184,7 @@ export class GToMServer {
       try {
         await handler();
       } catch (error) {
-        this.logger.error('Shutdown handler error', { error });
+        this.logger.error('Shutdown handler error', error instanceof Error ? error : new Error(String(error)));
       }
     }
 
