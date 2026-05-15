@@ -23,6 +23,14 @@ const SIGNATURE_FIELDS = new Set([
   'signature_key_id',
 ]);
 
+function normalizeProjectName(projectName: string): string {
+  const normalized = projectName.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error('ReceiptRegistry requires a non-empty project name');
+  }
+  return normalized.replace(/[^a-z0-9._-]/g, '-');
+}
+
 export interface ReceiptRegistryOptions {
   baseDir?: string;
   hmacSecret?: string;
@@ -149,8 +157,9 @@ export class ReceiptRegistry {
     const now = new Date();
     const year = now.getFullYear();
     const weekNum = getISOWeek(now);
+    const normalizedProjectName = normalizeProjectName(projectName);
     this.week = `${year}-W${String(weekNum).padStart(2, '0')}`;
-    this.baseDir = options.baseDir ?? path.join(process.cwd(), projectName, 'test', 'baselines');
+    this.baseDir = options.baseDir ?? path.join(process.cwd(), normalizedProjectName, 'test', 'baselines');
     this.basePath = path.join(this.baseDir, `receipts-${this.week}.jsonl`);
     this.schemaPath = path.join(this.baseDir, `schema.json`);
     this.hmacSecret = options.hmacSecret

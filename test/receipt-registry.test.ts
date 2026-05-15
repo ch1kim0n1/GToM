@@ -61,6 +61,25 @@ describe('ReceiptRegistry audit behavior', () => {
     expect(fromFile.schema_version).toBe(CURRENT_RECEIPT_SCHEMA_VERSION);
   });
 
+  it('uses a case-normalized default receipt path across platforms', async () => {
+    const originalCwd = process.cwd();
+    const tempCwd = await fs.mkdtemp(path.join(os.tmpdir(), 'gtom-cwd-'));
+    process.chdir(tempCwd);
+    try {
+      const lower = new ReceiptRegistry('gtom');
+      const mixed = new ReceiptRegistry('GToM');
+
+      await lower.append(makeReceipt({ receipt_id: '22222222-2222-4222-8222-222222222222' }));
+      const latest = await mixed.getLatest();
+
+      expect(latest?.receipt_id).toBe('22222222-2222-4222-8222-222222222222');
+      expect(await fs.readdir(tempCwd)).toEqual(['gtom']);
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(tempCwd, { recursive: true, force: true });
+    }
+  });
+
   it('rejects tampered signed receipts', async () => {
     const registry = new ReceiptRegistry('gtom', {
       baseDir,
