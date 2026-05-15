@@ -5,6 +5,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { BrainEngine, Migration } from './engine.js';
+import { globalObservability } from './observability.js';
 
 export type MigrationDialect = 'sqlite' | 'postgres';
 
@@ -45,7 +46,7 @@ export class Migrator {
 
     for (const migration of this.migrations) {
       if (migration.version > currentVersion) {
-        console.log(`Running migration ${migration.version}: ${migration.name}`);
+        globalObservability.logger.info('Running migration', { version: migration.version, name: migration.name });
         await this.engine.beginTransaction();
         try {
           await this.engine.execute(migration.up);
@@ -71,7 +72,7 @@ export class Migrator {
     for (let i = this.migrations.length - 1; i >= 0; i--) {
       const migration = this.migrations[i];
       if (migration.version > targetVersion && migration.version <= currentVersion) {
-        console.log(`Rolling back migration ${migration.version}: ${migration.name}`);
+        globalObservability.logger.info('Rolling back migration', { version: migration.version, name: migration.name });
         await this.engine.beginTransaction();
         try {
           await this.engine.execute(migration.down);

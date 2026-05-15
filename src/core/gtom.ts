@@ -20,9 +20,9 @@ import { ReceiptRegistry, type ReceiptRegistryOptions } from './receipt-registry
 import { DriftDetector } from './drift-detector.js';
 import { BudgetLedger } from './budget-ledger.js';
 import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
-import { AuditLogger } from '../../../shared/src/core/audit-logger.js';
 import type { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
 import { LLMClient } from './llm-client.js';
+import { globalObservability, type ShellJobAuditEntry } from './observability.js';
 
 type GToMHealthStatus = 'healthy' | 'degraded' | 'unhealthy';
 
@@ -74,9 +74,10 @@ export class GToM {
   private driftDetector: DriftDetector;
   private budgetLedger: BudgetLedger;
   private latencyTracker: LatencyTracker;
-  private auditLogger: AuditLogger;
+  private observability = globalObservability;
   private healthHistory: HealthHistoryEntry[] = [];
   private evalCaptureFailures: EvalCaptureFailure[] = [];
+  private lastHealthStatus: GToMHealthStatus | null = null;
   private readonly healthCheckTimeoutMs: number;
   private readonly syncFreshnessMaxMs: number;
   private readonly healthProbes: {
@@ -127,7 +128,6 @@ export class GToM {
       alert_threshold: 0.3,
     });
     this.latencyTracker = new LatencyTracker(1000);
-    this.auditLogger = new AuditLogger('gtom');
   }
 
   /**
@@ -145,30 +145,32 @@ export class GToM {
     surface: string;
     source: InfluenceEvent['source'];
   }): Promise<void> {
-    const start = performance.now();
-    await this.vulnerabilityManager.processObservation(observation);
-    this.latencyTracker.record(performance.now() - start);
+    return this.observability.timeAsync('ingestObservation', async () => {
+      const start = performance.now();
+      await this.vulnerabilityManager.processObservation(observation);
+      this.latencyTracker.record(performance.now() - start);
+    }, { surface: observation.surface, source: observation.source });
   }
 
   /**
    * Get current vulnerability state
    */
   getVulnerabilities(): Vulnerability[] {
-    return this.vulnerabilityManager.getVulnerabilities();
+    return this.observability.timeSync('getVulnerabilities', () => this.vulnerabilityManager.getVulnerabilities());
   }
 
   /**
    * Get current cognitive state
    */
   getCognitiveState(): CognitiveState | undefined {
-    return this.vulnerabilityManager.getCurrentCognitiveState();
+    return this.observability.timeSync('getCognitiveState', () => this.vulnerabilityManager.getCurrentCognitiveState());
   }
 
   /**
    * Get influence ledger
    */
   getInfluenceLedger(limit?: number): InfluenceEvent[] {
-    return this.vulnerabilityManager.getInfluenceLedger(limit);
+    return this.observability.timeSync('getInfluenceLedger', () => this.vulnerabilityManager.getInfluenceLedger(limit), { limit });
   }
 
   /**
@@ -178,30 +180,41 @@ export class GToM {
     context: string;
     action: string;
   }): Promise<AuthenticityScore> {
-    const start = performance.now();
+    return this.observability.timeAsync('scoreDecisionAuthenticity', async (span) => {
+      const start = performance.now();
     
-    // Check budget before execution
-    const budget = this.budgetLedger.getStatus();
-    if (budget.remaining_budget_usd < 0) {
-      throw new Error('Budget exceeded: cannot score decision authenticity');
-    }
+      // Check budget before execution
+      const budget = this.budgetLedger.getStatus();
+      if (budget.remaining_budget_usd < 0) {
+        throw new Error('Budget exceeded: cannot score decision authenticity');
+      }
     
-    const result = await this.authenticityScorer.scoreDecision({
-      ...decision,
-      vulnerabilities: this.vulnerabilityManager.getVulnerabilities(),
-      cognitiveState: this.vulnerabilityManager.getCurrentCognitiveState() ?? {
-        state_id: 'default',
-        cognitive_load: 0,
-        trust_level: 0.8,
-        emotional_state: 'neutral' as const,
-        attention_focus: 'task',
-        decision_fatigue: 0,
-        timestamp: new Date().toISOString(),
-      },
-      recentInfluences: [],
+      const result = await this.authenticityScorer.scoreDecision({
+        ...decision,
+        vulnerabilities: this.vulnerabilityManager.getVulnerabilities(),
+        cognitiveState: this.vulnerabilityManager.getCurrentCognitiveState() ?? {
+          state_id: 'default',
+          cognitive_load: 0,
+          trust_level: 0.8,
+          emotional_state: 'neutral' as const,
+          attention_focus: 'task',
+          decision_fatigue: 0,
+          timestamp: new Date().toISOString(),
+        },
+        recentInfluences: [],
+      });
+      this.latencyTracker.record(performance.now() - start);
+      this.observability.audit.recordDecision({
+        operation: 'scoreDecisionAuthenticity',
+        decision_id: result.decision_id,
+        score: result.authenticity_score,
+        verdict: result.authenticity_score >= 0.6 ? 'pass' : result.authenticity_score >= 0.4 ? 'pass_with_warnings' : 'fail',
+        trace_id: span.trace_id,
+        span_id: span.span_id,
+        metadata: { confidence: result.confidence },
+      });
+      return result;
     });
-    this.latencyTracker.record(performance.now() - start);
-    return result;
   }
 
   /**
@@ -212,31 +225,49 @@ export class GToM {
     userInteractions: string[];
     decisions: any[];
   }): Promise<SelfAuditResult> {
-    const start = performance.now();
+    return this.observability.timeAsync('performSelfAudit', async (span) => {
+      const start = performance.now();
     
-    // Check budget before execution
-    const budget = this.budgetLedger.getStatus();
-    if (budget.remaining_budget_usd < 0) {
-      throw new Error('Budget exceeded: cannot perform self-audit');
-    }
+      // Check budget before execution
+      const budget = this.budgetLedger.getStatus();
+      if (budget.remaining_budget_usd < 0) {
+        throw new Error('Budget exceeded: cannot perform self-audit');
+      }
     
-    const result = this.cognitiveICE.performSelfAudit(agentBehavior);
-    this.latencyTracker.record(performance.now() - start);
-    return result;
+      const result = await this.cognitiveICE.performSelfAudit(agentBehavior);
+      this.latencyTracker.record(performance.now() - start);
+      this.observability.audit.recordDecision({
+        operation: 'performSelfAudit',
+        verdict: result.passed ? 'pass' : 'fail',
+        trace_id: span.trace_id,
+        span_id: span.span_id,
+        metadata: { concerns: result.concerns.length },
+      });
+      return result;
+    });
   }
 
   /**
    * Predict conflict for GOrchestrator escalation
    */
   async predictConflict(request: ConflictPredictionRequest): Promise<ConflictPredictionResponse> {
-    const start = performance.now();
-    const budget = this.budgetLedger.getStatus();
-    if (budget.remaining_budget_usd < 0) {
-      throw new Error('Budget exceeded: cannot predict conflicts');
-    }
-    const result = this.conflictPredictor.predictConflicts(request);
-    this.latencyTracker.record(performance.now() - start);
-    return result;
+    return this.observability.timeAsync('predictConflict', async (span) => {
+      const start = performance.now();
+      const budget = this.budgetLedger.getStatus();
+      if (budget.remaining_budget_usd < 0) {
+        throw new Error('Budget exceeded: cannot predict conflicts');
+      }
+      const result = await this.conflictPredictor.predictConflicts(request);
+      this.latencyTracker.record(performance.now() - start);
+      this.observability.audit.recordDecision({
+        operation: 'predictConflict',
+        verdict: result.predicted_conflicts.length > 0 ? 'pass_with_warnings' : 'pass',
+        trace_id: span.trace_id,
+        span_id: span.span_id,
+        metadata: { predicted_conflicts: result.predicted_conflicts.length },
+      });
+      return result;
+    });
   }
 
   /** Alias kept for backward compatibility with existing tests and callers. */
@@ -248,21 +279,21 @@ export class GToM {
    * Get aggregate vulnerability score
    */
   getAggregateVulnerability() {
-    return this.vulnerabilityManager.calculateAggregateVulnerability();
+    return this.observability.timeSync('getAggregateVulnerability', () => this.vulnerabilityManager.calculateAggregateVulnerability());
   }
 
   /**
    * Reset vulnerability state
    */
   resetVulnerabilities(): void {
-    this.vulnerabilityManager.resetToBaseline();
+    this.observability.timeSync('resetVulnerabilities', () => this.vulnerabilityManager.resetToBaseline());
   }
 
   /**
    * Decay vulnerabilities over time
    */
   decayVulnerabilities(hours: number = 24): void {
-    this.vulnerabilityManager.decayVulnerabilities(hours);
+    this.observability.timeSync('decayVulnerabilities', () => this.vulnerabilityManager.decayVulnerabilities(hours), { hours });
   }
 
   /**
@@ -270,6 +301,8 @@ export class GToM {
    */
   async healthCheck(): Promise<GToMHealthCheckResult[]> {
     const start = performance.now();
+    const span = this.observability.tracer.startSpan('healthCheck', { gbrain_endpoint: this.gbrainEndpoint });
+    this.observability.metrics.recordThroughput('healthCheck');
     const results: GToMHealthCheckResult[] = [];
     
     // Check vulnerabilityManager
@@ -346,6 +379,7 @@ export class GToM {
 
     const overall = this.calculateOverallHealth(results);
     this.recordHealthSnapshot(overall.score, overall.status);
+    await this.alertOnHealthDrop(overall.status, overall.score, results, span.trace_id);
     results.push(this.checkHealthTrend());
     results.push({
       service: 'overall_health',
@@ -358,6 +392,8 @@ export class GToM {
     });
 
     this.latencyTracker.record(performance.now() - start);
+    this.observability.metrics.recordLatency('healthCheck', performance.now() - start);
+    this.observability.tracer.endSpan(span);
     return results;
   }
 
@@ -433,10 +469,22 @@ export class GToM {
   }
 
   private async probeGbrain(): Promise<HealthProbeOutcome> {
-    return this.fetchProbe(`${this.gbrainEndpoint}/health`, {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    }, { endpoint: this.gbrainEndpoint, timeout_ms: this.healthCheckTimeoutMs });
+    const span = this.observability.tracer.startSpan('gbrain.health_probe', { boundary: 'gbrain' });
+    try {
+      const result = await this.fetchProbe(`${this.gbrainEndpoint}/health`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GToM-Trace-Id': span.trace_id,
+          traceparent: `00-${span.trace_id.replace(/-/g, '').slice(0, 32).padEnd(32, '0')}-${span.span_id.replace(/-/g, '').slice(0, 16).padEnd(16, '0')}-01`,
+        },
+      }, { endpoint: this.gbrainEndpoint, timeout_ms: this.healthCheckTimeoutMs, trace_id: span.trace_id });
+      this.observability.tracer.endSpan(span);
+      return result;
+    } catch (error) {
+      this.observability.tracer.endSpan(span, error);
+      throw error;
+    }
   }
 
   private async fetchProbe(url: string, init: RequestInit, details: Record<string, unknown>): Promise<HealthProbeOutcome> {
@@ -633,7 +681,8 @@ export class GToM {
     endDate?: string;
     corpusSha8?: string;
   }): Promise<any[]> {
-    if (options?.corpusSha8) {
+    return this.observability.timeAsync('getReceipts', async () => {
+      if (options?.corpusSha8) {
       let result = await this.receiptRegistry.getByCorpusSha8(options.corpusSha8);
       if (options.startDate) {
         const start = new Date(options.startDate);
@@ -646,66 +695,121 @@ export class GToM {
       if (options.offset) result = result.slice(options.offset);
       if (options.limit) result = result.slice(0, options.limit);
       return result;
-    }
+      }
 
-    if (options?.startDate || options?.endDate) {
+      if (options?.startDate || options?.endDate) {
       const start = options.startDate ? new Date(options.startDate) : new Date(0);
       const end = options.endDate ? new Date(options.endDate) : new Date();
       let result = await this.receiptRegistry.getAllBetween(start, end);
       if (options.offset) result = result.slice(options.offset);
       if (options.limit) result = result.slice(0, options.limit);
       return result;
-    }
+      }
     
-    // If no date range, get latest
-    const latest = await this.receiptRegistry.getLatest();
-    return latest ? [latest] : [];
+      // If no date range, get latest
+      const latest = await this.receiptRegistry.getLatest();
+      return latest ? [latest] : [];
+    }, {
+      has_date_range: Boolean(options?.startDate || options?.endDate),
+      corpus_sha8: options?.corpusSha8,
+      limit: options?.limit,
+    });
   }
 
   /**
    * Detect drift in cognitive metrics
    */
   detectDrift(metricName?: string): any {
-    if (metricName) {
-      return this.driftDetector.detectDrift(metricName);
-    }
-    return this.driftDetector.detectAllDrift();
+    return this.observability.timeSync('detectDrift', () => {
+      if (metricName) {
+        return this.driftDetector.detectDrift(metricName);
+      }
+      return this.driftDetector.detectAllDrift();
+    }, { metric_name: metricName });
   }
 
   /**
    * Get drift statistics
    */
   async getDrift(metricName?: string): Promise<any[]> {
-    const start = performance.now();
-    let result;
-    if (metricName) {
-      const driftResult = this.driftDetector.detectDrift(metricName);
-      result = driftResult ? [driftResult] : [];
-    } else {
-      result = this.driftDetector.detectAllDrift();
-    }
-    this.latencyTracker.record(performance.now() - start);
-    return result;
+    return this.observability.timeAsync('getDrift', async () => {
+      const start = performance.now();
+      let result;
+      if (metricName) {
+        const driftResult = this.driftDetector.detectDrift(metricName);
+        result = driftResult ? [driftResult] : [];
+      } else {
+        result = this.driftDetector.detectAllDrift();
+      }
+      this.latencyTracker.record(performance.now() - start);
+      return result;
+    }, { metric_name: metricName });
   }
 
   /**
    * Get cost statistics
    */
   getCostStats() {
-    return this.budgetLedger.getSummary();
+    return this.observability.timeSync('getCostStats', () => this.budgetLedger.getSummary());
   }
 
   /**
    * Get authenticity history
    */
   getAuthenticityHistory(limit: number = 10) {
-    // Return a simple history array for now
-    // AuthenticityScorer doesn't have getHistory method yet
-    return {
+    return this.observability.timeSync('getAuthenticityHistory', () => ({
       recent_scores: [],
       trend: 'stable',
       last_updated: new Date().toISOString(),
-    };
+    }), { limit });
+  }
+
+  getObservabilitySnapshot(): Record<string, unknown> {
+    return this.observability.snapshot();
+  }
+
+  exportMetrics(format: 'prometheus' | 'otel' | 'json' = 'json'): string | Record<string, unknown> {
+    if (format === 'prometheus') return this.observability.metrics.exportPrometheus();
+    if (format === 'otel') return this.observability.metrics.exportOpenTelemetry();
+    return this.observability.metrics.getSnapshot();
+  }
+
+  recordShellJobAudit(entry: ShellJobAuditEntry): void {
+    this.observability.audit.recordShellJob(entry);
+  }
+
+  private async alertOnHealthDrop(
+    status: GToMHealthStatus,
+    score: number,
+    checks: GToMHealthCheckResult[],
+    traceId: string,
+  ): Promise<void> {
+    const webhookUrl = process.env.GTOM_HEALTH_WEBHOOK_URL;
+    const priorStatus = this.lastHealthStatus;
+    this.lastHealthStatus = status;
+    if (!webhookUrl || status === 'healthy' || priorStatus === status) {
+      return;
+    }
+
+    try {
+      await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: 'gtom',
+          status,
+          score,
+          trace_id: traceId,
+          timestamp: new Date().toISOString(),
+          failed_services: checks.filter((check) => !check.healthy).map((check) => check.service),
+        }),
+        signal: AbortSignal.timeout(this.healthCheckTimeoutMs),
+      });
+      this.observability.metrics.incrementCounter('gtom_health_alerts_total');
+    } catch (error) {
+      this.observability.metrics.recordError('healthAlertWebhook');
+      this.observability.logger.warn('Health alert webhook failed', { error, status, score });
+    }
   }
 
   private parseCaps(value: string | undefined): Record<string, number> {

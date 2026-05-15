@@ -4,14 +4,16 @@
  */
 
 import { Command } from './command-registry.js';
+import { GToM } from '../core/gtom.js';
 
 export const metricsCommand: Command = {
   name: 'metrics',
   description: 'View and export metrics',
   handler: async (args: string[]) => {
-    console.log('GToM metrics:');
-    console.log('  Total vulnerabilities: 0');
-    console.log('  Total assessments: 0');
+    const format = args[0] || 'json';
+    const gtom = new GToM();
+    const metrics = gtom.exportMetrics(format as any);
+    console.log(typeof metrics === 'string' ? metrics : JSON.stringify(metrics, null, 2));
   },
   subcommands: [
     {
@@ -19,7 +21,9 @@ export const metricsCommand: Command = {
       description: 'Export metrics',
       handler: async (args: string[]) => {
         const format = args[0] || 'json';
-        console.log(`Exporting metrics as ${format}...`);
+        const gtom = new GToM();
+        const metrics = gtom.exportMetrics(format as any);
+        console.log(typeof metrics === 'string' ? metrics : JSON.stringify(metrics, null, 2));
       },
     },
   ],

@@ -10,6 +10,7 @@ import { ReceiptRegistry } from './receipt-registry.js';
 import { GTOM_RUBRIC_V1, authenticityToLevel, getRubricHash } from './gtom-rubric.js';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
 import { LLMClient, LLMCallResult } from './llm-client.js';
+import { globalObservability } from './observability.js';
 
 type DecisionInput = {
   context: string;
@@ -107,7 +108,7 @@ export class AuthenticityScorer {
    */
   async scoreDecision(decision: DecisionInput): Promise<AuthenticityScore> {
     const assessment = await this.evaluateWithConsensus(decision).catch((error) => {
-      console.warn('[GToM] LLM authenticity assessment failed, using local safety fallback:', error);
+      globalObservability.logger.warn('LLM authenticity assessment failed, using local safety fallback', { error });
       const fallback = this.evaluateWithLocalFallback(decision);
       return {
         ...fallback,
@@ -147,7 +148,7 @@ export class AuthenticityScorer {
       },
     };
     this.receiptRegistry.append(receipt).catch(err => {
-      console.warn('[GToM] Failed to emit receipt:', err);
+      globalObservability.logger.warn('Failed to emit receipt', { error: err });
     });
 
     return {

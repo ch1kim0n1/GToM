@@ -1,0 +1,53 @@
+{
+  "title": "GToM Observability",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "tags": ["gtom", "quality-parity"],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Public Method Throughput",
+      "targets": [
+        {
+          "expr": "sum by (method) (rate(gtom_method_calls_total[5m]))",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Public Method Error Rate",
+      "targets": [
+        {
+          "expr": "sum by (method) (rate(gtom_method_errors_total[5m]))",
+          "legendFormat": "{{method}}"
+        }
+      ],
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency P50/P95/P99",
+      "targets": [
+        {
+          "expr": "gtom_method_latency_ms{quantile=~\"0.50|0.95|0.99\"}",
+          "legendFormat": "{{method}} p{{quantile}}"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 8 }
+    },
+    {
+      "type": "stat",
+      "title": "Health Alerts",
+      "targets": [
+        {
+          "expr": "increase(gtom_health_alerts_total[24h])",
+          "legendFormat": "alerts"
+        }
+      ],
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 6 }
+    }
+  ]
+}

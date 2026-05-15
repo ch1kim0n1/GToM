@@ -5,6 +5,7 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GToM } from '../core/gtom.js';
+import { globalObservability } from '../core/observability.js';
 import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
 
 type MCPScope = 'read' | 'write' | 'admin';
@@ -656,7 +657,7 @@ class GToMMCPServer {
   async start() {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('[GToM MCP Server] Started');
+    globalObservability.logger.info('GToM MCP Server started');
   }
 }
 
@@ -664,7 +665,7 @@ class GToMMCPServer {
 // @ts-ignore - CommonJS compatibility
 if (import.meta.url === `file://${process.argv[1]}`) {
   const server = new GToMMCPServer();
-  server.start().catch(console.error);
+  server.start().catch((error) => globalObservability.logger.error('GToM MCP Server failed to start', error));
 }
 
 export { GToMMCPServer };

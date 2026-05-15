@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { globalObservability } from './observability.js';
 
 export interface BudgetReservation {
   id: string;
@@ -333,9 +334,10 @@ export class BudgetLedger {
   private warnIfNeeded(): void {
     const total = this.getTotalSpendUsd() + this.getReservedUsd();
     if (total >= this.config.alertThresholdUsd) {
-      console.warn(
-        `[BudgetLedger] Spend threshold exceeded: $${total.toFixed(6)} of $${this.config.maxBudgetUsd.toFixed(6)}`,
-      );
+      globalObservability.logger.warn('Spend threshold exceeded', {
+        total_usd: total,
+        max_budget_usd: this.config.maxBudgetUsd,
+      });
     }
   }
 

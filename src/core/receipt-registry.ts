@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import * as lockfile from 'proper-lockfile';
 import { Pool } from 'pg';
 import { ExecutionReceipt } from '../types/quality-rubric.js';
+import { globalObservability } from './observability.js';
 
 const CURRENT_SCHEMA_VERSION = 1;
 const DEFAULT_RECEIPT_TTL_DAYS = 365;
@@ -173,7 +174,10 @@ export class ReceiptRegistry {
     try {
       const existingSchema = await this.readSchema();
       if (existingSchema && existingSchema.version !== this.schemaVersion) {
-        console.warn(`[ReceiptRegistry] Schema version mismatch: expected ${this.schemaVersion}, got ${existingSchema.version}. Migration may be required.`);
+        globalObservability.logger.warn('Receipt schema version mismatch; migration may be required', {
+          expected_version: this.schemaVersion,
+          actual_version: existingSchema.version,
+        });
       }
       
       if (!existingSchema) {

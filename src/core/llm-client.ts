@@ -14,6 +14,7 @@ import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
 import { createLogger } from '../../../shared/src/core/structured-logger.js';
 import { BudgetLedger } from './budget-ledger.js';
+import { globalObservability } from './observability.js';
 
 const logger = createLogger('gtom-llm-client');
 
@@ -91,7 +92,7 @@ export function estimateCostUsd(
 ): number {
   const pricing = MODEL_PRICING[modelId];
   if (!pricing) {
-    console.warn(`[LLMClient] No pricing for model: ${modelId}`);
+    globalObservability.logger.warn('No pricing for model', { model_id: modelId });
     return 0;
   }
   return (
@@ -119,7 +120,7 @@ export function estimateTokens(text: string, model: string = 'gpt-4o'): number {
     return tokens.length;
   } catch (error) {
     // Fallback to a general-purpose tokenizer rather than a length heuristic
-    console.warn('[LLMClient] tiktoken failed, falling back to cl100k_base:', error);
+    globalObservability.logger.warn('tiktoken failed, falling back to cl100k_base', { error, model });
     try {
       const fallback = get_encoding('cl100k_base');
       const tokens = fallback.encode(text);
@@ -426,19 +427,23 @@ export class LLMClient {
 
         if (rateLimitDelay !== null) {
           delay = rateLimitDelay;
-          console.warn(
-            `[LLMClient] ${operationName} attempt ${attempt + 1}/${maxRetries + 1} hit rate limit, ` +
-            `retrying in ${delay}ms (Retry-After respected):`,
-            error
-          );
+          globalObservability.logger.warn('LLM call hit rate limit; retrying after Retry-After delay', {
+            operation: operationName,
+            attempt: attempt + 1,
+            max_attempts: maxRetries + 1,
+            delay_ms: delay,
+            error,
+          });
         } else {
           // Calculate exponential backoff delay
           delay = baseDelay * Math.pow(2, attempt);
-          console.warn(
-            `[LLMClient] ${operationName} attempt ${attempt + 1}/${maxRetries + 1} failed, ` +
-            `retrying in ${delay}ms:`,
-            error
-          );
+          globalObservability.logger.warn('LLM call failed; retrying with exponential backoff', {
+            operation: operationName,
+            attempt: attempt + 1,
+            max_attempts: maxRetries + 1,
+            delay_ms: delay,
+            error,
+          });
         }
 
         await this.sleep(delay);

@@ -169,7 +169,7 @@ function generateCompletionScript(shell: 'bash' | 'zsh' | 'fish'): string {
   const commands = [
     'ingest', 'score', 'audit', 'vulnerabilities', 'health', 'eval', 'replay',
     'regress', 'receipts', 'diff', 'trend', 'drift', 'decay', 'reset', 'cost',
-    'backup', 'restore', 'export', 'completion',
+    'metrics', 'backup', 'restore', 'export', 'completion',
   ];
   const options = [
     '--json', '--quiet', '--cycles', '--budget-usd', '--gbrain', '--help',
@@ -1171,6 +1171,37 @@ program
       process.exit(0);
     } catch (error) {
       console.error(chalk.red('[GToM] Cost query failed:'), error);
+      process.exit(1);
+    }
+  });
+
+// Metrics command
+program
+  .command('metrics')
+  .description('Export observability metrics')
+  .option('--format <format>', 'Metrics format (json, prometheus, otel)', 'json')
+  .option('--cycles <number>', 'Number of cycles to run', '1')
+  .option('--budget-usd <number>', 'Maximum LLM budget for this command')
+  .option('--json', 'Output as JSON')
+  .option('--quiet', 'Suppress output for CI use')
+  .action((options) => {
+    try {
+      parsePositiveInteger(options.cycles, '--cycles');
+      applyBudgetOption(options);
+      const format = options.format as 'json' | 'prometheus' | 'otel';
+      if (!['json', 'prometheus', 'otel'].includes(format)) {
+        throw new Error('--format must be one of: json, prometheus, otel');
+      }
+      const gtom = createGToM(options);
+      const metrics = gtom.exportMetrics(format);
+      if (format === 'prometheus') {
+        if (!options.quiet) console.log(metrics);
+      } else if (options.json || !options.quiet) {
+        console.log(JSON.stringify(metrics, null, 2));
+      }
+      process.exit(0);
+    } catch (error) {
+      console.error(chalk.red('[GToM] Metrics export failed:'), error);
       process.exit(1);
     }
   });

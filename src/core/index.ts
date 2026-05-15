@@ -7,6 +7,16 @@ export { SQLiteEngine } from './sqlite-engine.js';
 export { createEngine, createDefaultEngine } from './engine-factory.js';
 export { Migrator, createMigrator } from './migrate.js';
 export { createBackup, restoreBackup, exportPersistenceSnapshot, getPersistenceRoots } from './persistence-tools.js';
+export {
+  Observability,
+  MetricsRegistry,
+  LocalLogger,
+  LocalAuditLogger,
+  Tracer,
+  globalObservability,
+  redactPII,
+} from './observability.js';
+export type { ShellJobAuditEntry, DecisionAuditEntry, SpanContext, LocalLogEntry } from './observability.js';
 
 export { VulnerabilityRegistry } from './vulnerability-registry.js';
 export type { Vulnerability } from './vulnerability-registry.js';

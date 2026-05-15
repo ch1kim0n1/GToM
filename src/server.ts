@@ -10,6 +10,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { GToM } from './core/gtom';
 import { StructuredLogger } from '../../shared/src/observability/structured-logger.js';
+import { globalObservability } from './core/observability';
 
 export interface ConflictPredictionRequest {
   task: string;
@@ -78,11 +79,21 @@ export class GToMServer {
    */
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const { method, url } = req;
+    const traceId = req.headers['x-trace-id']?.toString() ?? req.headers.traceparent?.toString().split('-')[1];
+    const span = globalObservability.tracer.startSpan(`http.${method ?? 'UNKNOWN'} ${url ?? '/'}`, {
+      trace_id: traceId,
+      method,
+      url,
+      gbrain_correlation: req.headers['x-gbrain-trace-id']?.toString(),
+    });
+    globalObservability.metrics.recordThroughput('http_request');
+    const start = performance.now();
 
     // Enable CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Trace-Id, X-GBrain-Trace-Id, Traceparent');
+    res.setHeader('X-Trace-Id', span.trace_id);
 
     if (method === 'OPTIONS') {
       res.writeHead(204);
@@ -97,12 +108,21 @@ export class GToMServer {
         await this.handleLiveness(res);
       } else if (url === '/health/ready' && method === 'GET') {
         await this.handleReadiness(res);
+      } else if (url === '/metrics' && method === 'GET') {
+        await this.handlePrometheusMetrics(res);
+      } else if (url === '/metrics/otel' && method === 'GET') {
+        await this.handleOtelMetrics(res);
       } else {
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'Not found' }));
       }
+      globalObservability.metrics.recordLatency('http_request', performance.now() - start);
+      globalObservability.tracer.endSpan(span);
     } catch (error) {
-      console.error('[GToMServer] Request error:', error);
+      globalObservability.metrics.recordError('http_request');
+      globalObservability.metrics.recordLatency('http_request', performance.now() - start);
+      globalObservability.tracer.endSpan(span, error);
+      globalObservability.logger.error('GToMServer request error', error, { method, url }, span);
       res.writeHead(500);
       res.end(JSON.stringify({ error: 'Internal server error' }));
     }
@@ -161,6 +181,16 @@ export class GToMServer {
   private async handleReadiness(res: ServerResponse): Promise<void> {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ready', timestamp: new Date().toISOString() }));
+  }
+
+  private async handlePrometheusMetrics(res: ServerResponse): Promise<void> {
+    res.writeHead(200, { 'Content-Type': 'text/plain; version=0.0.4' });
+    res.end(this.gtom.exportMetrics('prometheus') as string);
+  }
+
+  private async handleOtelMetrics(res: ServerResponse): Promise<void> {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(this.gtom.exportMetrics('otel')));
   }
 
   /**

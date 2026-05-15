@@ -2,6 +2,8 @@
  * Logging utility for GToM
  */
 
+import { LocalLogger } from './observability.js';
+
 export enum LogLevel {
   DEBUG = 0,
   INFO = 1,
@@ -20,9 +22,11 @@ export interface LogEntry {
 export class Logger {
   private level: LogLevel;
   private entries: LogEntry[] = [];
+  private structuredLogger: LocalLogger;
 
-  constructor(level: LogLevel = LogLevel.INFO) {
+  constructor(level: LogLevel = LogLevel.INFO, name = 'gtom') {
     this.level = level;
+    this.structuredLogger = new LocalLogger(name);
   }
 
   setLevel(level: LogLevel): void {
@@ -44,8 +48,12 @@ export class Logger {
     this.entries.push(entry);
 
     const levelName = LogLevel[level];
-    const contextStr = context ? ` ${JSON.stringify(context)}` : '';
-    console.log(`[${entry.timestamp.toISOString()}] [${levelName}] ${message}${contextStr}`);
+    const normalizedLevel = levelName.toLowerCase() as 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+    if (normalizedLevel === 'error' || normalizedLevel === 'fatal') {
+      this.structuredLogger[normalizedLevel](message, undefined, context);
+    } else {
+      this.structuredLogger[normalizedLevel](message, context);
+    }
   }
 
   debug(message: string, context?: Record<string, unknown>): void {
