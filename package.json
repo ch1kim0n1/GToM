@@ -2,13 +2,49 @@
   "name": "gtom",
   "version": "0.1.0",
   "description": "Cognitive defense and Theory of Mind system",
+  "main": "./dist/GToM/src/core/index.js",
+  "types": "./dist/GToM/src/core/index.d.ts",
   "bin": {
     "gtom": "./dist/GToM/src/cli.js",
     "gtom-gbrain-sync": "./dist/GToM/src/commands/gstack-gbrain-sync.js",
     "gstack-gbrain-sync": "./dist/GToM/src/commands/gstack-gbrain-sync.js"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/GToM/src/core/index.d.ts",
+      "require": "./dist/GToM/src/core/index.js",
+      "default": "./dist/GToM/src/core/index.js"
+    },
+    "./server": {
+      "types": "./dist/GToM/src/server.d.ts",
+      "require": "./dist/GToM/src/server.js",
+      "default": "./dist/GToM/src/server.js"
+    },
+    "./cli": {
+      "types": "./dist/GToM/src/cli.d.ts",
+      "require": "./dist/GToM/src/cli.js",
+      "default": "./dist/GToM/src/cli.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "migrations/",
+    "completions/",
+    "scripts/postinstall.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc",
+    "clean": "node scripts/clean.js",
+    "prepack": "npm run clean && npm run build",
+    "prepublishOnly": "npm run verify && npm run check:version-tags",
+    "postinstall": "node scripts/postinstall.js",
     "dev": "tsc --watch",
     "serve": "node dist/GToM/src/serve.js",
     "test": "jest",
@@ -46,7 +82,25 @@
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
     "setup": "npm install && npm run build",
+    "install:local": "node scripts/install.js",
+    "build:binaries": "node scripts/package-binaries.js",
     "check:version-tags": "node scripts/check-version-tags.js"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": ">=0.33.0 <1",
+    "@modelcontextprotocol/sdk": ">=1.0.0 <2",
+    "openai": ">=4.0.0 <5"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.33.0",

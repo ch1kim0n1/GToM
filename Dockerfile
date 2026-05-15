@@ -9,6 +9,8 @@ WORKDIR /workspace/GToM
 
 COPY GToM/package*.json ./
 COPY GToM/tsconfig.json ./
+COPY GToM/scripts/postinstall.js ./scripts/postinstall.js
+COPY GToM/migrations ./migrations
 COPY shared /workspace/shared
 
 RUN npm ci
@@ -25,6 +27,8 @@ ENV PORT=3003
 ENV HEALTH_PORT=8080
 
 COPY GToM/package*.json ./
+COPY GToM/scripts/postinstall.js ./scripts/postinstall.js
+COPY GToM/migrations ./migrations
 COPY shared /workspace/shared
 
 RUN npm ci --omit=dev
