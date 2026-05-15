@@ -12,7 +12,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
-import { createLogger } from '../../../shared/src/core/structured-logger.js';
+import { createLogger } from './structured-logger.js';
 import { BudgetLedger } from './budget-ledger.js';
 import { globalObservability } from './observability.js';
 import { defaultSecretManager } from './secret-manager.js';

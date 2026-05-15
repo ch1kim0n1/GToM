@@ -5,7 +5,7 @@ import {
   Vulnerability,
   CognitiveState,
 } from '../types/index.js';
-import { StructuredLogger } from '../../../shared/src/observability/structured-logger.js';
+import { StructuredLogger } from './structured-logger.js';
 
 /**
  * Cognitive ICE (Intrusion Countermeasures Engine)

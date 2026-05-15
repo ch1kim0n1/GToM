@@ -10,10 +10,10 @@ function read(relativePath: string): string {
 
 describe('packaging and distribution', () => {
   it('declares npm package entry points and exports', () => {
-    expect(pkg.main).toBe('./dist/GToM/src/core/index.js');
-    expect(pkg.types).toBe('./dist/GToM/src/core/index.d.ts');
-    expect(pkg.exports['.'].types).toBe('./dist/GToM/src/core/index.d.ts');
-    expect(pkg.exports['./server'].require).toBe('./dist/GToM/src/server.js');
+    expect(pkg.main).toBe('./dist/core/index.js');
+    expect(pkg.types).toBe('./dist/core/index.d.ts');
+    expect(pkg.exports['.'].types).toBe('./dist/core/index.d.ts');
+    expect(pkg.exports['./server'].require).toBe('./dist/server.js');
     expect(pkg.files).toEqual(expect.arrayContaining(['dist/', 'migrations/', 'scripts/postinstall.js']));
     expect(pkg.publishConfig).toMatchObject({ access: 'public', provenance: true });
     expect(pkg.peerDependencies).toMatchObject({
@@ -37,4 +37,19 @@ describe('packaging and distribution', () => {
     expect(read('docs/RELEASING.md')).toContain('git tag -a gtom-vX.Y.Z');
     expect(read('docs/releases/gtom-v0.1.0.md')).toContain('Initial production-parity package release');
   });
+
+  it('does not depend on sibling workspace modules for packaged builds', () => {
+    const forbidden = 'shared' + '/src';
+    const sourceFiles = walk(path.join(root, 'src')).filter((file) => file.endsWith('.ts'));
+    for (const file of sourceFiles) {
+      expect(fs.readFileSync(file, 'utf8')).not.toContain(forbidden);
+    }
+  });
 });
+
+function walk(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(dir, entry.name);
+    return entry.isDirectory() ? walk(fullPath) : [fullPath];
+  });
+}

@@ -9,7 +9,7 @@ function read(relativePath: string): string {
 
 describe('operational maturity artifacts', () => {
   it('defines container, compose, Kubernetes, Helm, and systemd deployment surfaces', () => {
-    expect(read('Dockerfile')).toContain('dist/GToM/src/serve.js');
+    expect(read('Dockerfile')).toContain('dist/serve.js');
     expect(read('docker-compose.yml')).toContain('gorchestrator:');
     expect(read('docker-compose.yml')).toContain('gmirror:');
     expect(read('docker-compose.yml')).toContain('gtom:');

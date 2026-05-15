@@ -670,7 +670,7 @@ program
         let corpusReplay: any = null;
 
         try {
-          const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
+          const { ReplayManager } = await import('./core/replay-manager.js');
           const replayManager = new ReplayManager(options.corpus);
           const result = await replayManager.retrieve(corpusSha8);
           corpusReplay = result.found ? result : null;
@@ -701,7 +701,7 @@ program
         process.exit(0);
       }
 
-      const { ReplayManager } = await import('../../shared/src/core/replay-manager.js');
+      const { ReplayManager } = await import('./core/replay-manager.js');
       const replayManager = new ReplayManager(options.corpus);
       
       const result = await replayManager.retrieve(target);

@@ -19,8 +19,7 @@ import { ConflictPredictor } from './conflict-predictor.js';
 import { ReceiptRegistry, type ReceiptRegistryOptions } from './receipt-registry.js';
 import { DriftDetector } from './drift-detector.js';
 import { BudgetLedger } from './budget-ledger.js';
-import { LatencyTracker } from '../../../shared/src/core/latency-tracker.js';
-import type { HealthCheckResult } from '../../../shared/src/health/health-checker.js';
+import { LatencyTracker } from './latency-tracker.js';
 import { LLMClient } from './llm-client.js';
 import { globalObservability, type ShellJobAuditEntry } from './observability.js';
 import {
@@ -40,9 +39,14 @@ import { hashString } from './utils.js';
 
 type GToMHealthStatus = 'healthy' | 'degraded' | 'unhealthy';
 
-export interface GToMHealthCheckResult extends HealthCheckResult {
+export interface GToMHealthCheckResult {
+  service: string;
+  healthy: boolean;
   status: GToMHealthStatus;
   score: number;
+  latency_ms: number;
+  error?: string;
+  timestamp: string;
   details?: Record<string, unknown>;
 }
 

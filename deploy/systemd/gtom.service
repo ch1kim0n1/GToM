@@ -11,7 +11,7 @@ Environment=NODE_ENV=production
 Environment=PORT=3003
 Environment=HEALTH_PORT=8080
 EnvironmentFile=/etc/gtom/gtom.env
-ExecStart=/usr/bin/node /opt/gtom/dist/GToM/src/serve.js
+ExecStart=/usr/bin/node /opt/gtom/dist/serve.js
 ExecStop=/bin/kill -TERM $MAINPID
 TimeoutStopSec=30
 KillSignal=SIGTERM

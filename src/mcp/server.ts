@@ -6,7 +6,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { GToM } from '../core/gtom.js';
 import { globalObservability } from '../core/observability.js';
-import { createAuthMiddleware } from '../../../shared/src/core/token-auth.js';
+import { createAuthMiddleware } from '../core/token-auth.js';
 import { defaultSecretManager } from '../core/secret-manager.js';
 import {
   AccessPrincipal,

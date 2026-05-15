@@ -9,7 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 import { GToM } from './core/gtom';
-import { StructuredLogger } from '../../shared/src/observability/structured-logger.js';
+import { StructuredLogger } from './core/structured-logger.js';
 import { globalObservability } from './core/observability';
 import { sanitizeJsonValue, sanitizeUserString } from './core/input-sanitizer';
 import { FixedWindowRateLimiter, hashToken } from './core/security';

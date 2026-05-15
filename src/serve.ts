@@ -8,8 +8,8 @@
 
 import { GToM } from './core/gtom';
 import { GToMServer } from './server';
-import { StructuredLogger } from '../../shared/src/observability/structured-logger.js';
-import { HealthServer, type HealthCheckResult, type ReadinessCheckResult } from '../../shared/src/core/health-server.js';
+import { StructuredLogger } from './core/structured-logger.js';
+import { HealthServer, type HealthCheckResult, type ReadinessCheckResult } from './core/health-server.js';
 
 const port = parseInt(process.env.PORT || '3003', 10);
 const healthPort = process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT, 10) : 8080;

@@ -13,7 +13,7 @@ class Gtom < Formula
     system "npm", "rebuild", "better-sqlite3"
     system "npm", "run", "build"
     libexec.install Dir["*"]
-    bin.install_symlink libexec/"dist/GToM/src/cli.js" => "gtom"
+    bin.install_symlink libexec/"dist/cli.js" => "gtom"
   end
 
   test do

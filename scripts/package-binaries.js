@@ -8,7 +8,7 @@ const root = path.join(__dirname, '..');
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 const outputDir = path.join(root, 'dist', 'binaries');
-const entry = path.join(root, 'dist', 'GToM', 'src', 'cli.js');
+const entry = path.join(root, 'dist', 'cli.js');
 
 fs.mkdirSync(outputDir, { recursive: true });
 childProcess.execFileSync(npm, ['run', 'build'], { cwd: root, stdio: 'inherit' });

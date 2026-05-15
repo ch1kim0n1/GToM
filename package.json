@@ -2,28 +2,28 @@
   "name": "gtom",
   "version": "0.1.0",
   "description": "Cognitive defense and Theory of Mind system",
-  "main": "./dist/GToM/src/core/index.js",
-  "types": "./dist/GToM/src/core/index.d.ts",
+  "main": "./dist/core/index.js",
+  "types": "./dist/core/index.d.ts",
   "bin": {
-    "gtom": "./dist/GToM/src/cli.js",
-    "gtom-gbrain-sync": "./dist/GToM/src/commands/gstack-gbrain-sync.js",
-    "gstack-gbrain-sync": "./dist/GToM/src/commands/gstack-gbrain-sync.js"
+    "gtom": "./dist/cli.js",
+    "gtom-gbrain-sync": "./dist/commands/gstack-gbrain-sync.js",
+    "gstack-gbrain-sync": "./dist/commands/gstack-gbrain-sync.js"
   },
   "exports": {
     ".": {
-      "types": "./dist/GToM/src/core/index.d.ts",
-      "require": "./dist/GToM/src/core/index.js",
-      "default": "./dist/GToM/src/core/index.js"
+      "types": "./dist/core/index.d.ts",
+      "require": "./dist/core/index.js",
+      "default": "./dist/core/index.js"
     },
     "./server": {
-      "types": "./dist/GToM/src/server.d.ts",
-      "require": "./dist/GToM/src/server.js",
-      "default": "./dist/GToM/src/server.js"
+      "types": "./dist/server.d.ts",
+      "require": "./dist/server.js",
+      "default": "./dist/server.js"
     },
     "./cli": {
-      "types": "./dist/GToM/src/cli.d.ts",
-      "require": "./dist/GToM/src/cli.js",
-      "default": "./dist/GToM/src/cli.js"
+      "types": "./dist/cli.d.ts",
+      "require": "./dist/cli.js",
+      "default": "./dist/cli.js"
     },
     "./package.json": "./package.json"
   },
@@ -46,7 +46,7 @@
     "prepublishOnly": "npm run verify && npm run check:version-tags",
     "postinstall": "node scripts/postinstall.js",
     "dev": "tsc --watch",
-    "serve": "node dist/GToM/src/serve.js",
+    "serve": "node dist/serve.js",
     "test": "jest",
     "test:integration": "node scripts/run-jest-env.js INTEGRATION=1",
     "test:watch": "jest --watch",
