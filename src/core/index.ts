@@ -19,6 +19,16 @@ export type {
   GBrainWhoKnowsResult,
   CircuitBreakerState,
 } from './gbrain-client.js';
+export { GStackGBrainSync } from './gstack-gbrain-sync.js';
+export type {
+  GStackGBrainSyncArgs,
+  GStackGBrainSyncMode,
+  GStackGBrainStageResult,
+  GStackGBrainSyncState,
+  GStackGBrainSyncConfig,
+  ToolRoot,
+  SpawnRunner,
+} from './gstack-gbrain-sync.js';
 export {
   Observability,
   MetricsRegistry,

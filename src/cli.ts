@@ -16,6 +16,7 @@ import {
   exportPersistenceSnapshot,
   restoreBackup,
 } from './core/persistence-tools.js';
+import { GStackGBrainSync } from './core/gstack-gbrain-sync.js';
 
 const program = new Command();
 const DEFAULT_GBRAIN_ENDPOINT = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
@@ -1303,6 +1304,42 @@ program
   });
 
 // Shell completion command
+program
+  .command('gbrain-sync')
+  .description('Run gstack-compatible GBrain source sync for GToM and sibling tools')
+  .option('--incremental', 'Default. Register and sync changed sources')
+  .option('--full', 'Reindex code sources')
+  .option('--dry-run', 'Preview work without writes')
+  .option('--no-code', 'Skip current-repo code stage')
+  .option('--no-tools', 'Skip sibling tool stage')
+  .option('--quiet', 'Suppress output for CI use')
+  .option('--json', 'Output stage results as JSON')
+  .action(async (options) => {
+    try {
+      const selectedModes = [options.incremental, options.full, options.dryRun].filter(Boolean).length;
+      if (selectedModes > 1) {
+        throw new Error('Choose only one of --incremental, --full, or --dry-run');
+      }
+      const mode = options.full ? 'full' : options.dryRun ? 'dry-run' : 'incremental';
+      const sync = new GStackGBrainSync();
+      const result = await sync.run({
+        mode,
+        quiet: options.quiet,
+        noCode: options.code === false || options.noCode,
+        noTools: options.tools === false || options.noTools,
+      });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (!options.quiet || mode === 'dry-run') {
+        console.log(sync.format(result.stages, mode));
+      }
+      process.exit(result.exitCode);
+    } catch (error) {
+      console.error(chalk.red('[GToM] GBrain sync failed:'), error);
+      process.exit(1);
+    }
+  });
+
 program
   .command('completion')
   .description('Print shell completion script')

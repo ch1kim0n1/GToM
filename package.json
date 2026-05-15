@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Cognitive defense and Theory of Mind system",
   "bin": {
-    "gtom": "./dist/cli.js"
+    "gtom": "./dist/cli.js",
+    "gtom-gbrain-sync": "./dist/GToM/src/commands/gstack-gbrain-sync.js",
+    "gstack-gbrain-sync": "./dist/GToM/src/commands/gstack-gbrain-sync.js"
   },
   "scripts": {
     "build": "tsc",

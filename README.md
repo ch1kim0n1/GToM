@@ -58,6 +58,7 @@ gtom backup --output-dir ./.gtom/backups --json
 | `backup` | Create a rotated persistence backup. |
 | `restore` | Restore a persistence backup. |
 | `export` | Export persistence data as JSON. |
+| `gbrain-sync` | Run gstack-compatible GBrain source sync for GToM and sibling tools. |
 | `completion` | Print shell completion scripts. |
 
 ## HTTP
@@ -111,6 +112,7 @@ See [docs/MCP_CONTRACT.md](docs/MCP_CONTRACT.md) for the tool list, auth scopes,
 | `GTOM_GBRAIN_TIMEOUT_MS` | Per-call timeout for GBrain requests. |
 | `GTOM_GBRAIN_MAX_RETRIES` | Retry count for transient GBrain failures. |
 | `GTOM_GBRAIN_CIRCUIT_FAILURE_THRESHOLD` | Failure count before opening the GBrain circuit breaker. |
+| `GTOM_HOME` | Optional home for GToM local state; GBrain sync uses `~/.gtom` by default. |
 | `GTOM_HEALTH_WEBHOOK_URL` | Webhook called when health drops below healthy. |
 | `GTOM_MCP_AUTH_REQUIRED` | Require MCP token auth when set to `true`. |
 | `GTOM_MCP_READ_TOKEN` | Read-scope MCP token. |
