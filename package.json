@@ -77,7 +77,7 @@
     "eval:summary": "node scripts/eval-tools.js summary",
     "eval:compare": "node scripts/eval-tools.js compare",
     "eval:select": "node scripts/eval-tools.js select",
-    "verify": "npm run check:all && npm run typecheck && npm test",
+    "verify": "npm run check:all && npm run typecheck && npm test -- --runInBand",
     "ci:local": "node scripts/quality-gates.js ci-local",
     "lint": "eslint src/**/*.ts",
     "format": "prettier --write src/**/*.ts",
