@@ -138,9 +138,115 @@ describe('AuthenticityScorer', () => {
       recentInfluences: [],
     });
 
-    expect(llmClient.call).toHaveBeenCalledTimes(1);
+    expect(llmClient.call).toHaveBeenCalledTimes(3);
     expect(result.authenticity_score).toBe(0.82);
     expect(result.confidence).toBe(0.91);
     expect(result.factors.self_alignment).toBe(0.9);
+  });
+
+  it('requires two agreeing model votes and invokes tier 3 on disagreement', async () => {
+    const responses: Record<string, number> = {
+      'model-a': 0.2,
+      'model-b': 0.82,
+      'model-c': 0.86,
+    };
+    const llmClient = {
+      call: jest.fn(async (_prompt, options) => {
+        const model = options?.model as string;
+        const score = responses[model];
+        return {
+          content: JSON.stringify({
+            authenticity_score: score,
+            confidence: 0.9,
+            factors: {
+              self_alignment: score,
+              external_pressure: 1 - score,
+              time_pressure: 0.1,
+              information_completeness: 0.8,
+              emotional_state_impact: 0.2,
+            },
+            manipulation_indicators: score < 0.4 ? ['coercion'] : [],
+            reasoning: `${model} assessment`,
+          }),
+          input_tokens: 100,
+          output_tokens: 80,
+          model_id: model,
+          cost_usd: 0.001,
+          latency_ms: 5,
+        };
+      }),
+    };
+    scorer = new AuthenticityScorer({
+      llmClient,
+      consensus: {
+        models: ['model-a', 'model-b', 'model-c'],
+        consensusThreshold: 0.67,
+        allowTier3: true,
+      },
+    });
+
+    const result = await scorer.scoreDecision({
+      context: 'I compared options and selected the one that fits my workflow',
+      action: 'purchase',
+      vulnerabilities: [],
+      cognitiveState: makeCognitiveState(),
+      recentInfluences: [],
+    });
+
+    expect(llmClient.call).toHaveBeenCalledTimes(3);
+    expect(llmClient.call.mock.calls.map((call) => call[1]?.model)).toEqual(['model-a', 'model-b', 'model-c']);
+    expect(result.authenticity_score).toBeCloseTo(0.84);
+    expect(result.manipulation_indicators).toEqual([]);
+  });
+
+  it('disqualifies model votes with missing rubric dimensions', async () => {
+    const llmClient = {
+      call: jest.fn(async (_prompt, options) => {
+        const model = options?.model as string;
+        const factors = model === 'bad-model'
+          ? { self_alignment: 0.8 }
+          : {
+              self_alignment: 0.8,
+              external_pressure: 0.1,
+              time_pressure: 0.1,
+              information_completeness: 0.8,
+              emotional_state_impact: 0.2,
+            };
+        return {
+          content: JSON.stringify({
+            authenticity_score: 0.8,
+            confidence: 0.9,
+            factors,
+            manipulation_indicators: [],
+            reasoning: `${model} assessment`,
+          }),
+          input_tokens: 100,
+          output_tokens: 80,
+          model_id: model,
+          cost_usd: 0.001,
+          latency_ms: 5,
+        };
+      }),
+    };
+    scorer = new AuthenticityScorer({
+      llmClient,
+      consensus: {
+        models: ['good-a', 'bad-model', 'good-b'],
+        consensusThreshold: 0.67,
+        allowTier3: true,
+      },
+    });
+
+    const result = await scorer.scoreDecision({
+      context: 'I compared options and selected the one that fits my workflow',
+      action: 'purchase',
+      vulnerabilities: [],
+      cognitiveState: makeCognitiveState(),
+      recentInfluences: [],
+    });
+
+    expect(llmClient.call).toHaveBeenCalledTimes(3);
+    expect(result.authenticity_score).toBeCloseTo(0.8);
+    expect(result.confidence).toBeCloseTo(0.9);
   });
 });

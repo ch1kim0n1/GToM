@@ -39,6 +39,39 @@ interface LLMAuthenticityAssessment {
   cost_usd: number;
 }
 
+interface ConsensusConfig {
+  models: string[];
+  consensusThreshold: number;
+  allowTier3: boolean;
+  enableEarlyStopping: boolean;
+  dimensionAgreementTolerance: number;
+  minModelsForConsensus: number;
+}
+
+interface ConsensusAssessment extends LLMAuthenticityAssessment {
+  models_used: string[];
+  consensus: {
+    votes: Array<{
+      model_id: string;
+      verdict: 'pass' | 'pass_with_warnings' | 'fail';
+      authenticity_score: number;
+      confidence: number;
+      cost_usd: number;
+    }>;
+    disqualified_models: Array<{ model_id: string; reason: string }>;
+    consensus_threshold: number;
+    required_agreeing_models: number;
+    agreed: boolean;
+    winning_verdict: 'pass' | 'pass_with_warnings' | 'fail';
+    agreement_rate: number;
+    per_dimension_agreement: Record<string, number>;
+    wilson_95_ci: { lower: number; upper: number };
+    small_sample_note: boolean;
+    early_stopped: boolean;
+    tier3_invoked: boolean;
+  };
+}
+
 /**
  * Authenticity Scorer
  * 
@@ -51,19 +84,36 @@ interface LLMAuthenticityAssessment {
 export class AuthenticityScorer {
   private receiptRegistry: ReceiptRegistry;
   private llmClient: LLMCaller;
+  private consensusConfig: ConsensusConfig;
 
-  constructor(config: { llmClient?: LLMCaller } = {}) {
+  constructor(config: {
+    llmClient?: LLMCaller;
+    consensus?: Partial<ConsensusConfig>;
+  } = {}) {
     this.receiptRegistry = new ReceiptRegistry('gtom');
     this.llmClient = config.llmClient ?? new LLMClient();
+    this.consensusConfig = {
+      models: config.consensus?.models ?? ['claude-sonnet-4-6', 'gpt-4o', 'claude-opus-4-7'],
+      consensusThreshold: config.consensus?.consensusThreshold ?? Number(process.env.GTOM_CONSENSUS_THRESHOLD ?? 0.67),
+      allowTier3: config.consensus?.allowTier3 ?? process.env.GTOM_ALLOW_TIER3 !== 'false',
+      enableEarlyStopping: config.consensus?.enableEarlyStopping ?? true,
+      dimensionAgreementTolerance: config.consensus?.dimensionAgreementTolerance ?? 0.15,
+      minModelsForConsensus: config.consensus?.minModelsForConsensus ?? 2,
+    };
   }
 
   /**
    * Score a decision for authenticity
    */
   async scoreDecision(decision: DecisionInput): Promise<AuthenticityScore> {
-    const assessment = await this.evaluateWithLLM(decision).catch((error) => {
+    const assessment = await this.evaluateWithConsensus(decision).catch((error) => {
       console.warn('[GToM] LLM authenticity assessment failed, using local safety fallback:', error);
-      return this.evaluateWithLocalFallback(decision);
+      const fallback = this.evaluateWithLocalFallback(decision);
+      return {
+        ...fallback,
+        models_used: [fallback.model_id],
+        consensus: this.buildFallbackConsensus(fallback),
+      };
     });
 
     const scoreId = uuidv4();
@@ -78,7 +128,7 @@ export class AuthenticityScorer {
       rubric_name: GTOM_RUBRIC_V1.name,
       rubric_sha8: getRubricHash(GTOM_RUBRIC_V1),
       input_hash: crypto.createHash('sha256').update(JSON.stringify(decision)).digest('hex').substring(0, 16),
-      models_used: [assessment.model_id],
+      models_used: assessment.models_used,
       config_hash: crypto.createHash('sha256').update(JSON.stringify(GTOM_RUBRIC_V1)).digest('hex').substring(0, 16),
       verdict: assessment.authenticity_score >= 0.6 ? 'pass' : assessment.authenticity_score >= 0.4 ? 'pass_with_warnings' : 'fail',
       scores: {
@@ -93,6 +143,7 @@ export class AuthenticityScorer {
         rubric_level: authenticityToLevel(assessment.authenticity_score),
         manipulation_indicators: assessment.manipulation_indicators,
         reasoning: assessment.reasoning,
+        consensus: assessment.consensus,
       },
     };
     this.receiptRegistry.append(receipt).catch(err => {
@@ -116,11 +167,88 @@ export class AuthenticityScorer {
     };
   }
 
-  private async evaluateWithLLM(decision: DecisionInput): Promise<LLMAuthenticityAssessment> {
+  private async evaluateWithConsensus(decision: DecisionInput): Promise<ConsensusAssessment> {
+    const votes: LLMAuthenticityAssessment[] = [];
+    const disqualifiedModels: Array<{ model_id: string; reason: string }> = [];
+    const models = this.consensusConfig.allowTier3
+      ? this.consensusConfig.models
+      : this.consensusConfig.models.slice(0, 2);
+    let earlyStopped = false;
+    let tier3Invoked = false;
+
+    for (const [index, model] of models.entries()) {
+      if (index >= 2) {
+        tier3Invoked = true;
+      }
+      try {
+        votes.push(await this.evaluateWithLLM(decision, model));
+      } catch (error) {
+        disqualifiedModels.push({
+          model_id: model,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      if (
+        this.consensusConfig.enableEarlyStopping &&
+        index >= 1 &&
+        !this.consensusConfig.allowTier3 &&
+        this.hasConsensus(votes)
+      ) {
+        earlyStopped = true;
+        break;
+      }
+    }
+
+    if (votes.length < this.consensusConfig.minModelsForConsensus) {
+      throw new Error(`Consensus requires at least ${this.consensusConfig.minModelsForConsensus} qualified model votes; got ${votes.length}`);
+    }
+
+    const consensus = this.calculateConsensus(votes, disqualifiedModels, earlyStopped, tier3Invoked);
+    if (!consensus.agreed && this.consensusConfig.allowTier3 && !tier3Invoked && this.consensusConfig.models[2]) {
+      const tier3Model = this.consensusConfig.models[2];
+      try {
+        votes.push(await this.evaluateWithLLM(decision, tier3Model));
+        consensus.tier3_invoked = true;
+      } catch (error) {
+        disqualifiedModels.push({
+          model_id: tier3Model,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const finalConsensus = this.calculateConsensus(votes, disqualifiedModels, earlyStopped, consensus.tier3_invoked);
+    const winningVotes = votes.filter((vote) => this.verdictForScore(vote.authenticity_score) === finalConsensus.winning_verdict);
+    const contributingVotes = finalConsensus.agreed && winningVotes.length > 0 ? winningVotes : votes;
+    const costUsd = votes.reduce((sum, vote) => sum + vote.cost_usd, 0);
+    const score = this.average(contributingVotes.map((vote) => vote.authenticity_score));
+
+    return {
+      authenticity_score: score,
+      confidence: this.average(contributingVotes.map((vote) => vote.confidence)) * finalConsensus.agreement_rate,
+      factors: {
+        self_alignment: this.average(contributingVotes.map((vote) => vote.factors.self_alignment)),
+        external_pressure: this.average(contributingVotes.map((vote) => vote.factors.external_pressure)),
+        time_pressure: this.average(contributingVotes.map((vote) => vote.factors.time_pressure)),
+        information_completeness: this.average(contributingVotes.map((vote) => vote.factors.information_completeness)),
+        emotional_state_impact: this.average(contributingVotes.map((vote) => vote.factors.emotional_state_impact)),
+      },
+      manipulation_indicators: Array.from(new Set(contributingVotes.flatMap((vote) => vote.manipulation_indicators))),
+      reasoning: contributingVotes.map((vote) => `${vote.model_id}: ${vote.reasoning}`).join('\n'),
+      model_id: finalConsensus.winning_verdict,
+      cost_usd: costUsd,
+      models_used: votes.map((vote) => vote.model_id),
+      consensus: finalConsensus,
+    };
+  }
+
+  private async evaluateWithLLM(decision: DecisionInput, model?: string): Promise<LLMAuthenticityAssessment> {
     const prompt = [
       'You are GToM, a decision-authenticity evaluator.',
       'Assess whether the proposed action reflects the user\'s stable intent or is being distorted by manipulation, coercion, urgency, scarcity, social proof, authority pressure, decision fatigue, or emotional vulnerability.',
       'Return only strict JSON with keys: authenticity_score, confidence, factors, manipulation_indicators, reasoning.',
+      'The factors object must include all five keys: self_alignment, external_pressure, time_pressure, information_completeness, emotional_state_impact.',
       'All numeric scores must be between 0 and 1. Higher authenticity_score means more self-aligned and less coerced.',
       '',
       JSON.stringify({
@@ -144,6 +272,7 @@ export class AuthenticityScorer {
     ].join('\n');
 
     const result = await this.llmClient.call(prompt, {
+      model,
       maxTokens: 800,
       temperature: 0.1,
     });
@@ -160,6 +289,21 @@ export class AuthenticityScorer {
     const jsonText = this.extractJsonObject(content);
     const parsed = JSON.parse(jsonText) as Partial<LLMAuthenticityAssessment>;
     const factors = (parsed.factors ?? {}) as Partial<LLMAuthenticityAssessment['factors']>;
+    const requiredFactors: Array<keyof LLMAuthenticityAssessment['factors']> = [
+      'self_alignment',
+      'external_pressure',
+      'time_pressure',
+      'information_completeness',
+      'emotional_state_impact',
+    ];
+    for (const factor of requiredFactors) {
+      if (!Number.isFinite(Number(factors[factor]))) {
+        throw new Error(`LLM response missing required factor: ${factor}`);
+      }
+    }
+    if (!Number.isFinite(Number(parsed.authenticity_score)) || !Number.isFinite(Number(parsed.confidence))) {
+      throw new Error('LLM response missing numeric authenticity_score or confidence');
+    }
 
     return {
       authenticity_score: this.clamp01(Number(parsed.authenticity_score)),
@@ -208,6 +352,132 @@ export class AuthenticityScorer {
       model_id: 'local-safety-fallback',
       cost_usd: 0,
     };
+  }
+
+  private calculateConsensus(
+    votes: LLMAuthenticityAssessment[],
+    disqualifiedModels: Array<{ model_id: string; reason: string }>,
+    earlyStopped: boolean,
+    tier3Invoked: boolean,
+  ): ConsensusAssessment['consensus'] {
+    const voteSummaries = votes.map((vote) => ({
+      model_id: vote.model_id,
+      verdict: this.verdictForScore(vote.authenticity_score),
+      authenticity_score: vote.authenticity_score,
+      confidence: vote.confidence,
+      cost_usd: vote.cost_usd,
+    }));
+    const verdictCounts = voteSummaries.reduce<Record<'pass' | 'pass_with_warnings' | 'fail', number>>((counts, vote) => {
+      counts[vote.verdict]++;
+      return counts;
+    }, { pass: 0, pass_with_warnings: 0, fail: 0 });
+    const winningVerdict = (Object.entries(verdictCounts) as Array<['pass' | 'pass_with_warnings' | 'fail', number]>)
+      .sort((a, b) => b[1] - a[1])[0][0];
+    const winningCount = verdictCounts[winningVerdict];
+    const thresholdRequired = votes.length === 3 && this.consensusConfig.consensusThreshold <= (2 / 3) + 0.005
+      ? 2
+      : Math.ceil(votes.length * this.consensusConfig.consensusThreshold);
+    const requiredAgreeingModels = Math.max(this.consensusConfig.minModelsForConsensus, thresholdRequired);
+    const agreementRate = votes.length === 0 ? 0 : winningCount / votes.length;
+
+    return {
+      votes: voteSummaries,
+      disqualified_models: disqualifiedModels,
+      consensus_threshold: this.consensusConfig.consensusThreshold,
+      required_agreeing_models: requiredAgreeingModels,
+      agreed: winningCount >= requiredAgreeingModels,
+      winning_verdict: winningVerdict,
+      agreement_rate: agreementRate,
+      per_dimension_agreement: this.calculateDimensionAgreement(votes),
+      wilson_95_ci: this.wilsonInterval(winningCount, votes.length),
+      small_sample_note: votes.length < 30,
+      early_stopped: earlyStopped,
+      tier3_invoked: tier3Invoked,
+    };
+  }
+
+  private calculateDimensionAgreement(votes: LLMAuthenticityAssessment[]): Record<string, number> {
+    const dimensions: Array<keyof LLMAuthenticityAssessment['factors']> = [
+      'self_alignment',
+      'external_pressure',
+      'time_pressure',
+      'information_completeness',
+      'emotional_state_impact',
+    ];
+    const result: Record<string, number> = {};
+    for (const dimension of dimensions) {
+      let matchingPairs = 0;
+      let totalPairs = 0;
+      for (let i = 0; i < votes.length; i++) {
+        for (let j = i + 1; j < votes.length; j++) {
+          totalPairs++;
+          if (Math.abs(votes[i].factors[dimension] - votes[j].factors[dimension]) <= this.consensusConfig.dimensionAgreementTolerance) {
+            matchingPairs++;
+          }
+        }
+      }
+      result[dimension] = totalPairs === 0 ? 1 : matchingPairs / totalPairs;
+    }
+    return result;
+  }
+
+  private hasConsensus(votes: LLMAuthenticityAssessment[]): boolean {
+    if (votes.length < this.consensusConfig.minModelsForConsensus) return false;
+    return this.calculateConsensus(votes, [], false, false).agreed;
+  }
+
+  private verdictForScore(score: number): 'pass' | 'pass_with_warnings' | 'fail' {
+    return score >= 0.6 ? 'pass' : score >= 0.4 ? 'pass_with_warnings' : 'fail';
+  }
+
+  private wilsonInterval(successes: number, total: number): { lower: number; upper: number } {
+    if (total === 0) {
+      return { lower: 0, upper: 0 };
+    }
+    const z = 1.96;
+    const phat = successes / total;
+    const denominator = 1 + (z * z) / total;
+    const center = phat + (z * z) / (2 * total);
+    const margin = z * Math.sqrt((phat * (1 - phat) + (z * z) / (4 * total)) / total);
+    return {
+      lower: this.clamp01((center - margin) / denominator),
+      upper: this.clamp01((center + margin) / denominator),
+    };
+  }
+
+  private buildFallbackConsensus(fallback: LLMAuthenticityAssessment): ConsensusAssessment['consensus'] {
+    const verdict = this.verdictForScore(fallback.authenticity_score);
+    return {
+      votes: [{
+        model_id: fallback.model_id,
+        verdict,
+        authenticity_score: fallback.authenticity_score,
+        confidence: fallback.confidence,
+        cost_usd: fallback.cost_usd,
+      }],
+      disqualified_models: [],
+      consensus_threshold: this.consensusConfig.consensusThreshold,
+      required_agreeing_models: this.consensusConfig.minModelsForConsensus,
+      agreed: false,
+      winning_verdict: verdict,
+      agreement_rate: 1,
+      per_dimension_agreement: {
+        self_alignment: 1,
+        external_pressure: 1,
+        time_pressure: 1,
+        information_completeness: 1,
+        emotional_state_impact: 1,
+      },
+      wilson_95_ci: this.wilsonInterval(1, 1),
+      small_sample_note: true,
+      early_stopped: false,
+      tier3_invoked: false,
+    };
+  }
+
+  private average(values: number[]): number {
+    if (values.length === 0) return 0;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
   }
 
   private extractJsonObject(content: string): string {
