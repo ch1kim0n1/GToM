@@ -41,6 +41,7 @@ export const VulnerabilitySchema = z.object({
     'confirmation_bias',
     'framing_effects',
     'emotional_manipulation',
+    'phantom_third_party',
   ]),
   baseline_level: z.number().min(0).max(1),
   current_level: z.number().min(0).max(1),
@@ -62,6 +63,16 @@ export const CognitiveStateSchema = z.object({
 });
 
 export type CognitiveState = z.infer<typeof CognitiveStateSchema>;
+
+export const RelationalCognitiveStateSchema = CognitiveStateSchema.extend({
+  bid_responsiveness: z.number().min(0).max(1),
+  repair_willingness: z.number().min(0).max(1),
+  attachment_security: z.number().min(0).max(1),
+  emotional_labor_ratio: z.number().min(0),
+  dyad_id: z.string().optional(),
+});
+
+export type RelationalCognitiveState = z.infer<typeof RelationalCognitiveStateSchema>;
 
 export const AuthenticityScoreSchema = z.object({
   score_id: z.string().uuid(),
@@ -170,9 +181,116 @@ export type ConflictPredictionRequest = z.infer<typeof ConflictPredictionRequest
 
 export const ConflictPredictionResponseSchema = z.object({
   predicted_conflicts: z.array(ConflictPredictionSchema),
+  aggregate_risk: z.number().min(0).max(1).optional(),
 });
 
 export type ConflictPredictionResponse = z.infer<typeof ConflictPredictionResponseSchema>;
+
+// ============================================================================
+// DYAD relational conflict and bid-authenticity types
+// ============================================================================
+
+export const RelationalConflictTypeSchema = z.enum([
+  'bid_ignored',
+  'bid_rejected',
+  'repair_refused',
+  'labor_asymmetry',
+  'phantom_third_party',
+  'attachment_threat',
+]);
+
+export type RelationalConflictType = z.infer<typeof RelationalConflictTypeSchema>;
+
+export const BidEventSchema = z.object({
+  bid_id: z.string().optional(),
+  participant: z.enum(['a', 'b']),
+  bid_type: z.string(),
+  timestamp: z.string().datetime(),
+  response_type: z.enum(['toward', 'away', 'against', 'ignored']).optional(),
+});
+
+export type BidEvent = z.infer<typeof BidEventSchema>;
+
+export const EmotionalSignatureSchema = z.object({
+  baseline: z.string(),
+  current: z.string(),
+  volatility: z.number().min(0).max(1).default(0.5),
+});
+
+export type EmotionalSignature = z.infer<typeof EmotionalSignatureSchema>;
+
+export const DyadMessageSchema = z.object({
+  message_id: z.string().optional(),
+  participant: z.enum(['a', 'b']),
+  text: z.string(),
+  timestamp: z.string().datetime(),
+  type: z.enum(['message', 'bid', 'response', 'repair_attempt']).default('message'),
+  response_type: z.enum(['toward', 'away', 'against', 'ignored']).optional(),
+  success: z.boolean().optional(),
+  to_bid_id: z.string().optional(),
+});
+
+export type DyadMessage = z.infer<typeof DyadMessageSchema>;
+
+export const RelationalParticipantSchema = z.object({
+  participant_id: z.string(),
+  attachment_style: z.enum(['secure', 'anxious', 'avoidant', 'disorganized']).optional(),
+  recent_bid_history: z.array(BidEventSchema),
+  emotional_signature: EmotionalSignatureSchema,
+});
+
+export type RelationalParticipant = z.infer<typeof RelationalParticipantSchema>;
+
+export const RelationalConflictRequestSchema = z.object({
+  dyad_id: z.string(),
+  participant_a: RelationalParticipantSchema,
+  participant_b: RelationalParticipantSchema,
+  message_window: z.array(DyadMessageSchema),
+  analysis_mode: z.literal('relational'),
+});
+
+export type RelationalConflictRequest = z.infer<typeof RelationalConflictRequestSchema>;
+
+export const RelationalConflictPredictionSchema = z.object({
+  prediction_id: z.string().uuid(),
+  dyad_id: z.string(),
+  conflict_type: RelationalConflictTypeSchema,
+  severity: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string(),
+  recommended_action: z.enum(['surface_gently', 'defer', 'refuse', 'monitor']),
+});
+
+export type RelationalConflictPrediction = z.infer<typeof RelationalConflictPredictionSchema>;
+
+export const RelationalConflictResponseSchema = z.object({
+  predicted_conflicts: z.array(RelationalConflictPredictionSchema),
+  aggregate_risk: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+});
+
+export type RelationalConflictResponse = z.infer<typeof RelationalConflictResponseSchema>;
+
+export const BidAuthenticityInputSchema = z.object({
+  bid_text: z.string(),
+  bid_type: z.string(),
+  emotional_context: z.string(),
+  recent_bid_history: z.array(BidEventSchema),
+});
+
+export type BidAuthenticityInput = z.infer<typeof BidAuthenticityInputSchema>;
+
+export const BidAuthenticityResultSchema = z.object({
+  is_genuine: z.boolean(),
+  is_proportionate: z.boolean(),
+  is_safe_to_respond: z.boolean(),
+  compliance_pressure_detected: z.boolean(),
+  authenticity_score: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1),
+  reasoning: z.string(),
+});
+
+export type BidAuthenticityResult = z.infer<typeof BidAuthenticityResultSchema>;
 
 export const GBrainCognitiveQuerySchema = z.object({
   query_type: z.enum(['beliefs', 'desires', 'intentions', 'biases']),

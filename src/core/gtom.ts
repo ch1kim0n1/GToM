@@ -11,6 +11,11 @@ import {
   SelfAuditResult,
   ConflictPredictionRequest,
   ConflictPredictionResponse,
+  BidAuthenticityInput,
+  BidAuthenticityResult,
+  RelationalCognitiveState,
+  RelationalConflictRequest,
+  RelationalConflictResponse,
 } from '../types/index.js';
 import { VulnerabilityManager } from './vulnerability.js';
 import { AuthenticityScorer } from './authenticity.js';
@@ -106,6 +111,7 @@ export class GToM {
     gbrain?: HealthProbe;
     sandbox?: HealthProbe;
   };
+  private readonly relationalStates = new Map<string, RelationalCognitiveState>();
 
   constructor(config: {
     gbrainEndpoint?: string;
@@ -169,7 +175,7 @@ export class GToM {
 
     this.authenticityScorer = new AuthenticityScorer({ llmClient });
     this.cognitiveICE = new CognitiveICE();
-    this.conflictPredictor = new ConflictPredictor();
+    this.conflictPredictor = new ConflictPredictor(llmClient);
     this.receiptRegistry = new ReceiptRegistry('gtom', config.receiptRegistryOptions);
     this.driftDetector = new DriftDetector({
       window_size: 100,
@@ -398,6 +404,48 @@ export class GToM {
   /** Alias kept for backward compatibility with existing tests and callers. */
   async predictConflicts(request: ConflictPredictionRequest, options: GToMOperationOptions = {}): Promise<ConflictPredictionResponse> {
     return this.predictConflict(request, options);
+  }
+
+  async predictRelationalConflicts(
+    request: RelationalConflictRequest,
+    options: GToMOperationOptions = {},
+  ): Promise<RelationalConflictResponse> {
+    const release = await this.backpressure.acquire({ cancellationToken: options.cancellationToken });
+    const progress = new ProgressReporter('predictRelationalConflicts', options.onProgress);
+    try {
+      options.cancellationToken?.throwIfCancelled();
+      progress.report('started', 5);
+      return await this.observability.timeAsync('predictRelationalConflicts', async (span) => {
+        const start = performance.now();
+        const result = await this.conflictPredictor.predictRelationalConflicts(request);
+        this.recordRelationalMetrics(request);
+        this.updateRelationalState(request);
+        this.latencyTracker.record(performance.now() - start);
+        this.observability.audit.recordDecision({
+          operation: 'predictRelationalConflicts',
+          verdict: result.aggregate_risk > 0.8 ? 'fail' : result.predicted_conflicts.length > 0 ? 'pass_with_warnings' : 'pass',
+          trace_id: span.trace_id,
+          span_id: span.span_id,
+          metadata: {
+            dyad_id: request.dyad_id,
+            aggregate_risk: result.aggregate_risk,
+            predicted_conflicts: result.predicted_conflicts.map(conflict => conflict.conflict_type),
+          },
+        });
+        progress.report('completed', 100);
+        return result;
+      });
+    } finally {
+      release();
+    }
+  }
+
+  async scoreBid(input: BidAuthenticityInput): Promise<BidAuthenticityResult> {
+    return this.authenticityScorer.scoreBidAuthenticity(input);
+  }
+
+  getAttachmentState(dyadId: string): RelationalCognitiveState | null {
+    return this.relationalStates.get(dyadId) || null;
   }
 
   /**
@@ -989,6 +1037,70 @@ export class GToM {
       this.observability.metrics.recordError('healthAlertWebhook');
       this.observability.logger.warn('Health alert webhook failed', { error, status, score });
     }
+  }
+
+  private recordRelationalMetrics(request: RelationalConflictRequest): void {
+    const bids = request.message_window.filter(message => message.type === 'bid');
+    const toward = bids.filter(message => message.response_type === 'toward');
+    const repairs = request.message_window.filter(message => message.type === 'repair_attempt');
+    const successfulRepairs = repairs.filter(message => message.success === true);
+    const bidAcceptanceRate = bids.length > 0 ? toward.length / bids.length : 0;
+    const repairSuccessRate = repairs.length > 0 ? successfulRepairs.length / repairs.length : 0;
+    const context = {
+      cohort: request.dyad_id,
+      dyad_id: request.dyad_id,
+      timestamp: new Date().toISOString(),
+      window: '7d',
+    };
+
+    this.driftDetector.recordSnapshot(`bid_acceptance_rate:${request.dyad_id}`, bidAcceptanceRate, context);
+    this.driftDetector.recordSnapshot(`repair_success_rate:${request.dyad_id}`, repairSuccessRate, context);
+
+    for (const metric of [`bid_acceptance_rate:${request.dyad_id}`, `repair_success_rate:${request.dyad_id}`]) {
+      const drift = this.driftDetector.detectDrift(metric);
+      if (drift && drift.drift_magnitude > 0.20 && drift.trend === 'degrading') {
+        this.observability.audit.recordDecision({
+          operation: 'relationship_health_alert',
+          verdict: 'pass_with_warnings',
+          metadata: {
+            dyad_id: request.dyad_id,
+            metric,
+            drift: drift.drift_magnitude,
+          },
+        });
+      }
+    }
+  }
+
+  private updateRelationalState(request: RelationalConflictRequest): void {
+    const bids = request.message_window.filter(message => message.type === 'bid');
+    const toward = bids.filter(message => message.response_type === 'toward');
+    const repairs = request.message_window.filter(message => message.type === 'repair_attempt');
+    const successfulRepairs = repairs.filter(message => message.success === true);
+    const participantABids = bids.filter(message => message.participant === 'a').length;
+    const participantBBids = bids.filter(message => message.participant === 'b').length;
+    const totalBids = Math.max(1, participantABids + participantBBids);
+    const bidResponsiveness = bids.length > 0 ? toward.length / bids.length : 0.5;
+    const repairWillingness = repairs.length > 0 ? successfulRepairs.length / repairs.length : 0.5;
+    const emotionalLaborRatio = participantBBids === 0
+      ? participantABids
+      : participantABids / Math.max(1, participantBBids);
+    const attachmentSecurity = Math.max(0, Math.min(1, bidResponsiveness * 0.6 + repairWillingness * 0.4));
+
+    this.relationalStates.set(request.dyad_id, {
+      state_id: uuidv4(),
+      timestamp: new Date().toISOString(),
+      trust_level: attachmentSecurity,
+      cognitive_load: Math.min(1, Math.abs((participantABids / totalBids) - 0.5) * 2),
+      emotional_state: attachmentSecurity >= 0.65 ? 'positive' : attachmentSecurity >= 0.4 ? 'neutral' : 'stressed',
+      attention_focus: `dyad:${request.dyad_id}`,
+      decision_fatigue: 1 - repairWillingness,
+      bid_responsiveness: bidResponsiveness,
+      repair_willingness: repairWillingness,
+      attachment_security: attachmentSecurity,
+      emotional_labor_ratio: emotionalLaborRatio,
+      dyad_id: request.dyad_id,
+    });
   }
 
   private parseCaps(value: string | undefined): Record<string, number> {

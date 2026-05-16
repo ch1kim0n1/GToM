@@ -14,6 +14,10 @@ import { globalObservability } from './core/observability';
 import { sanitizeJsonValue, sanitizeUserString } from './core/input-sanitizer';
 import { FixedWindowRateLimiter, hashToken } from './core/security';
 import { CancellationToken } from './core/performance';
+import {
+  BidAuthenticityInputSchema,
+  RelationalConflictRequestSchema,
+} from './types/index';
 
 export interface ConflictPredictionRequest {
   task: string;
@@ -172,6 +176,12 @@ export class GToMServer {
         await this.handlePredictConflicts(req, res);
       } else if (url === '/gtom/predict-conflicts/stream' && method === 'POST') {
         await this.handlePredictConflictsStream(req, res);
+      } else if (url === '/gtom/predict-relational-conflicts' && method === 'POST') {
+        await this.handlePredictRelationalConflicts(req, res);
+      } else if (url === '/gtom/score-bid' && method === 'POST') {
+        await this.handleScoreBid(req, res);
+      } else if (url?.startsWith('/gtom/attachment-state/') && method === 'GET') {
+        await this.handleAttachmentState(url, res);
       } else if (url === '/health/live' && method === 'GET') {
         await this.handleLiveness(res);
       } else if (url === '/health/ready' && method === 'GET') {
@@ -210,6 +220,41 @@ export class GToMServer {
     const response = this.toConflictPredictionResponse(request.task, result);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(response));
+  }
+
+  private async handlePredictRelationalConflicts(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await this.readJsonBody(req, res, '/gtom/predict-relational-conflicts');
+    if (!body) return;
+    const request = RelationalConflictRequestSchema.parse(sanitizeJsonValue(body, 'predict-relational-conflicts'));
+    const result = await this.gtom.predictRelationalConflicts(request);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  }
+
+  private async handleScoreBid(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const body = await this.readJsonBody(req, res, '/gtom/score-bid');
+    if (!body) return;
+    const request = BidAuthenticityInputSchema.parse(sanitizeJsonValue(body, 'score-bid'));
+    const result = await this.gtom.scoreBid(request);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  }
+
+  private async handleAttachmentState(url: string, res: ServerResponse): Promise<void> {
+    const rawDyadId = decodeURIComponent(url.replace('/gtom/attachment-state/', ''));
+    const dyadId = sanitizeUserString(rawDyadId, {
+      fieldName: 'dyad_id',
+      maxLength: 128,
+      allowNewlines: false,
+    });
+    const result = this.gtom.getAttachmentState(dyadId);
+    if (!result) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Attachment state not found' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
   }
 
   private async handlePredictConflictsStream(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -272,6 +317,32 @@ export class GToMServer {
       task,
       active_attempts: Array.isArray(request.active_attempts) ? request.active_attempts as any : [],
     };
+  }
+
+  private async readJsonBody(
+    req: IncomingMessage,
+    res: ServerResponse,
+    resource: string,
+  ): Promise<unknown | null> {
+    const bufferModule = await import('node:buffer');
+    const buffers: Buffer[] = [];
+    let bytesRead = 0;
+    for await (const chunk of req) {
+      const buffer = chunk as Buffer;
+      bytesRead += buffer.length;
+      if (bytesRead > this.maxBodyBytes) {
+        globalObservability.audit.recordSecurityEvent({
+          event_type: 'http_body_rejected',
+          resource,
+          metadata: { reason: 'body_too_large', max_body_bytes: this.maxBodyBytes },
+        });
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Request body too large' }));
+        return null;
+      }
+      buffers.push(buffer);
+    }
+    return JSON.parse(bufferModule.Buffer.concat(buffers).toString() || '{}');
   }
 
   private toConflictPredictionResponse(task: string, result: any): Record<string, unknown> {

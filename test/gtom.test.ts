@@ -88,4 +88,47 @@ describe('GToM integration', () => {
       expect(c.severity).toBeLessThanOrEqual(1);
     });
   });
+
+  it('predictRelationalConflicts detects ignored bids and stores attachment state', async () => {
+    const response = await gtom.predictRelationalConflicts({
+      dyad_id: 'dyad-1',
+      analysis_mode: 'relational',
+      participant_a: {
+        participant_id: 'a',
+        attachment_style: 'anxious',
+        recent_bid_history: [],
+        emotional_signature: { baseline: 'calm', current: 'worried', volatility: 0.5 },
+      },
+      participant_b: {
+        participant_id: 'b',
+        attachment_style: 'avoidant',
+        recent_bid_history: [],
+        emotional_signature: { baseline: 'calm', current: 'withdrawn', volatility: 0.4 },
+      },
+      message_window: [
+        { participant: 'a', text: 'Can we talk tonight?', timestamp: '2026-05-15T00:00:00.000Z', type: 'bid', response_type: 'ignored' },
+        { participant: 'a', text: 'I am trying to repair this.', timestamp: '2026-05-15T00:05:00.000Z', type: 'repair_attempt', success: false },
+        { participant: 'a', text: 'My ex never ignored me like this.', timestamp: '2026-05-15T00:07:00.000Z', type: 'message' },
+      ],
+    });
+
+    expect(response.aggregate_risk).toBeGreaterThan(0);
+    expect(response.predicted_conflicts.map(c => c.conflict_type)).toEqual(expect.arrayContaining(['bid_ignored', 'repair_refused']));
+    const state = gtom.getAttachmentState('dyad-1');
+    expect(state?.attachment_security).toBeGreaterThanOrEqual(0);
+    expect(state?.bid_responsiveness).toBe(0);
+  });
+
+  it('scoreBid returns a BidAuthenticityResult', async () => {
+    const result = await gtom.scoreBid({
+      bid_text: 'Could we take a few minutes to talk?',
+      bid_type: 'support',
+      emotional_context: 'Both participants are calm.',
+      recent_bid_history: [],
+    });
+
+    expect(result.authenticity_score).toBeGreaterThanOrEqual(0);
+    expect(result.authenticity_score).toBeLessThanOrEqual(1);
+    expect(typeof result.is_genuine).toBe('boolean');
+  });
 });

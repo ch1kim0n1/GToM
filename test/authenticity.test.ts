@@ -249,4 +249,17 @@ describe('AuthenticityScorer', () => {
     expect(result.authenticity_score).toBeCloseTo(0.8);
     expect(result.confidence).toBeCloseTo(0.9);
   });
+
+  it('scores bid authenticity and flags compliance pressure', async () => {
+    const result = await scorer.scoreBidAuthenticity({
+      bid_text: 'If you loved me, you would reply right now.',
+      bid_type: 'attention',
+      emotional_context: 'One participant is seeking reassurance after a disagreement.',
+      recent_bid_history: [],
+    });
+
+    expect(result.compliance_pressure_detected).toBe(true);
+    expect(result.is_safe_to_respond).toBe(true);
+    expect(result.authenticity_score).toBeLessThan(0.7);
+  });
 });

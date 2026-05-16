@@ -5,6 +5,9 @@ import {
   Decision,
   Vulnerability,
   CognitiveState,
+  BidAuthenticityInput,
+  BidAuthenticityResult,
+  BidAuthenticityResultSchema,
 } from '../types/index.js';
 import { ReceiptRegistry } from './receipt-registry.js';
 import { GTOM_RUBRIC_V1, authenticityToLevel, getRubricHash } from './gtom-rubric.js';
@@ -169,6 +172,24 @@ export class AuthenticityScorer {
       manipulation_indicators: assessment.manipulation_indicators,
       created_at: new Date().toISOString(),
     };
+  }
+
+  async scoreBidAuthenticity(input: BidAuthenticityInput): Promise<BidAuthenticityResult> {
+    try {
+      const result = await this.llmClient.call([
+        'You are GToM evaluating an emotional bid in a relationship.',
+        'Assess whether the bid is genuine, proportionate, safe to respond to, and whether compliance pressure or coercive language is present.',
+        'Return strict JSON with keys: is_genuine, is_proportionate, is_safe_to_respond, compliance_pressure_detected, authenticity_score, confidence, reasoning.',
+        JSON.stringify(input, null, 2),
+      ].join('\n'), {
+        maxTokens: 700,
+        temperature: 0.1,
+      });
+      return BidAuthenticityResultSchema.parse(JSON.parse(this.extractJsonObject(result.content)));
+    } catch (error) {
+      globalObservability.logger.warn('LLM bid authenticity assessment failed, using local fallback', { error });
+      return this.scoreBidAuthenticityFallback(input);
+    }
   }
 
   private async evaluateWithConsensus(decision: DecisionInput): Promise<ConsensusAssessment> {
@@ -706,5 +727,32 @@ export class AuthenticityScorer {
     const lowerText = text.toLowerCase();
     
     return urgentKeywords.some(keyword => lowerText.includes(keyword));
+  }
+
+  private scoreBidAuthenticityFallback(input: BidAuthenticityInput): BidAuthenticityResult {
+    const combined = `${input.bid_text}\n${input.emotional_context}`.toLowerCase();
+    const compliancePressureDetected = /\b(if you loved me|you owe me|have to|must|prove it|or else|make you)\b/i.test(combined);
+    const disproportionate = /\b(always|never|everything|nothing|right now)\b/i.test(combined) || input.bid_text.length > 500;
+    const unsafe = /\b(threat|hurt|punish|leave you unless|kill|harm)\b/i.test(combined);
+    const repeatedIgnored = input.recent_bid_history.filter(bid => bid.response_type === 'ignored' || bid.response_type === 'against').length;
+    const authenticityScore = this.clamp01(
+      0.85 -
+      (compliancePressureDetected ? 0.35 : 0) -
+      (disproportionate ? 0.2 : 0) -
+      (unsafe ? 0.4 : 0) -
+      Math.min(0.2, repeatedIgnored * 0.05),
+    );
+
+    return {
+      is_genuine: authenticityScore >= 0.5 && !compliancePressureDetected,
+      is_proportionate: !disproportionate,
+      is_safe_to_respond: !unsafe,
+      compliance_pressure_detected: compliancePressureDetected,
+      authenticity_score: authenticityScore,
+      confidence: 0.72,
+      reasoning: compliancePressureDetected
+        ? 'Local fallback detected compliance pressure in the bid language.'
+        : 'Local fallback found no strong coercion markers in the bid language.',
+    };
   }
 }
