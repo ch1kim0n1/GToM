@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import Anthropic from '@anthropic-ai/sdk';
 import chalk from 'chalk';
+import { saveAnalysis } from '../db';
 
 export interface AnalyzeOptions {
   text?: string;
@@ -8,6 +9,7 @@ export interface AnalyzeOptions {
   mode: 'agent' | 'relationship';
   model: string;
   json: boolean;
+  dyadId?: string;
 }
 
 interface Conflict {
@@ -111,6 +113,9 @@ export async function analyzeCommand(options: AnalyzeOptions): Promise<void> {
   }
 
   const result = JSON.parse(jsonMatch[0]) as AgentResult | RelationshipResult;
+
+  // Persist result to local SQLite
+  saveAnalysis(options.dyadId ?? 'default', options.mode, result, content.slice(0, 200));
 
   if (options.json) {
     console.log(JSON.stringify({ ...result, mode: options.mode, model: options.model }, null, 2));

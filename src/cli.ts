@@ -32,6 +32,7 @@ import {
   getVersionMetadata,
 } from './core/versioning.js';
 import { analyzeCommand } from './commands/analyze.js';
+import { historyCommand } from './commands/history.js';
 
 const program = new Command();
 const DEFAULT_GBRAIN_ENDPOINT = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
@@ -1582,12 +1583,28 @@ program
   .option('--mode <mode>', 'Analysis mode: agent or relationship', 'agent')
   .option('-m, --model <model>', 'LLM model', 'claude-haiku-4-5-20251001')
   .option('--json', 'Output as JSON')
+  .option('--dyad-id <id>', 'Track this conversation across sessions (stored in ~/.gtom/gtom.db)')
   .action(async (opts: any) => {
     await analyzeCommand({
       text: opts.text,
       file: opts.file,
       mode: opts.mode,
       model: opts.model,
+      json: opts.json ?? false,
+      dyadId: opts.dyadId,
+    });
+  });
+
+program
+  .command('history')
+  .description('Show past analyses from local history (~/.gtom/gtom.db)')
+  .option('--dyad-id <id>', 'Filter by dyad ID')
+  .option('-n, --limit <n>', 'Number of entries to show', (v: string) => parseInt(v, 10), 20)
+  .option('--json', 'Output as JSON')
+  .action(async (opts: any) => {
+    await historyCommand({
+      dyadId: opts.dyadId,
+      limit: opts.limit,
       json: opts.json ?? false,
     });
   });
