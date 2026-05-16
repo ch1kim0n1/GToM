@@ -699,8 +699,7 @@ class GToMMCPServer {
 }
 
 // Start server if run directly
-// @ts-ignore - CommonJS compatibility
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (require.main === module) {
   const server = new GToMMCPServer();
   server.start().catch((error) => globalObservability.logger.error('GToM MCP Server failed to start', error));
 }
