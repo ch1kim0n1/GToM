@@ -31,6 +31,7 @@ import {
   CURRENT_RECEIPT_SCHEMA_VERSION,
   getVersionMetadata,
 } from './core/versioning.js';
+import { analyzeCommand } from './commands/analyze.js';
 
 const program = new Command();
 const DEFAULT_GBRAIN_ENDPOINT = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
@@ -1571,6 +1572,24 @@ program
       console.error(chalk.red('[GToM] Completion generation failed:'), error);
       process.exit(1);
     }
+  });
+
+program
+  .command('analyze')
+  .description('Analyze text for conflicts and authenticity (no external services required)')
+  .option('-t, --text <content>', 'Text to analyze directly')
+  .option('-f, --file <path>', 'Read content from file')
+  .option('--mode <mode>', 'Analysis mode: agent or relationship', 'agent')
+  .option('-m, --model <model>', 'LLM model', 'claude-haiku-4-5-20251001')
+  .option('--json', 'Output as JSON')
+  .action(async (opts: any) => {
+    await analyzeCommand({
+      text: opts.text,
+      file: opts.file,
+      mode: opts.mode,
+      model: opts.model,
+      json: opts.json ?? false,
+    });
   });
 
 program.parse();
