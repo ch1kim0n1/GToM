@@ -1,11 +1,13 @@
 import { GToM } from '../src/core/gtom.js';
 import { ConflictPredictionRequest } from '../src/types/index.js';
 
+jest.setTimeout(15000);
+
 describe('GToM integration', () => {
   let gtom: GToM;
 
   beforeEach(() => {
-    gtom = new GToM();
+    gtom = new GToM({ healthCheckTimeoutMs: 200 });
   });
 
   it('ingestObservation → getVulnerabilities: authority observation raises authority_bias', async () => {

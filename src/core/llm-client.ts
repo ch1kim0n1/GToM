@@ -14,6 +14,7 @@ import OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
 import { createLogger } from './structured-logger.js';
 import { BudgetLedger } from './budget-ledger.js';
+import { BudgetExceededError } from './errors.js';
 import { globalObservability } from './observability.js';
 import { defaultSecretManager } from './secret-manager.js';
 import {
@@ -217,6 +218,15 @@ export class LLMClient {
     const startTime = Date.now();
     const estimatedInputTokens = estimateTokens(prompt, model);
     const estimatedCost = estimateCostUsd(model, estimatedInputTokens, maxTokens);
+    
+    // Budget hard gate: check if budget is exceeded before reserving
+    const budgetStatus = this.budgetLedger.getStatus();
+    if (budgetStatus.remaining_budget_usd <= 0) {
+      throw new BudgetExceededError(
+        `Budget of $${budgetStatus.max_budget_usd.toFixed(4)} exceeded; aborting task. Spent: $${budgetStatus.total_committed_usd.toFixed(4)}`
+      );
+    }
+    
     const reservation = this.budgetLedger.reserve('llm.call', estimatedCost, {
       ttlMs: this.config.timeoutMs + 60_000,
       resolver: this.resolver,

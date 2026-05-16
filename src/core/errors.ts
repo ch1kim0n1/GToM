@@ -43,3 +43,10 @@ export class TheoryOfMindError extends GToMError {
     this.name = 'TheoryOfMindError';
   }
 }
+
+export class BudgetExceededError extends GToMError {
+  constructor(message: string) {
+    super(message, 'BUDGET_EXCEEDED');
+    this.name = 'BudgetExceededError';
+  }
+}

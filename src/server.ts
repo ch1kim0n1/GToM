@@ -8,6 +8,7 @@
  */
 
 import type { IncomingMessage, ServerResponse } from 'http';
+import { z } from 'zod';
 import { GToM } from './core/gtom';
 import { StructuredLogger } from './core/structured-logger.js';
 import { globalObservability } from './core/observability';
@@ -18,6 +19,18 @@ import {
   BidAuthenticityInputSchema,
   RelationalConflictRequestSchema,
 } from './types/index';
+
+export const ConflictPredictionRequestSchema = z.object({
+  task: z.string().min(1),
+  active_attempts: z.array(z.object({
+    attempt_id: z.string().uuid(),
+    config_id: z.string().uuid(),
+    current_state: z.record(z.unknown()),
+    recent_actions: z.array(z.string()),
+  })).optional().default([]),
+  context: z.string().optional(),
+  constraints: z.array(z.string()).optional(),
+});
 
 export interface ConflictPredictionRequest {
   task: string;
@@ -305,9 +318,14 @@ export class GToMServer {
     }
     const body = bufferModule.Buffer.concat(buffers).toString();
 
-    const request = sanitizeJsonValue(JSON.parse(body), 'predict-conflicts') as ConflictPredictionRequest & {
-      active_attempts?: unknown[];
-    };
+    const rawBody = sanitizeJsonValue(JSON.parse(body), 'predict-conflicts');
+    const parsed = ConflictPredictionRequestSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request', details: parsed.error.flatten() }));
+      return null;
+    }
+    const request = parsed.data;
     const task = sanitizeUserString(request.task, {
       fieldName: 'task',
       maxLength: 10_000,
@@ -315,7 +333,7 @@ export class GToMServer {
     });
     return {
       task,
-      active_attempts: Array.isArray(request.active_attempts) ? request.active_attempts as any : [],
+      active_attempts: request.active_attempts as any,
     };
   }
 

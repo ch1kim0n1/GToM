@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { BudgetExceededError } from './errors.js';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -277,8 +278,8 @@ export class GToM {
     
       // Check budget before execution
       const budget = this.budgetLedger.getStatus();
-      if (budget.remaining_budget_usd < 0) {
-        throw new Error('Budget exceeded: cannot score decision authenticity');
+      if (budget.remaining_budget_usd <= 0) {
+        throw new BudgetExceededError(`GToM budget exceeded. Refusing to score. Spent: $${budget.total_committed_usd.toFixed(4)}, Max: $${budget.max_budget_usd.toFixed(4)}`);
       }
       progress.report('budget_checked', 20);
     
@@ -342,8 +343,8 @@ export class GToM {
     
       // Check budget before execution
       const budget = this.budgetLedger.getStatus();
-      if (budget.remaining_budget_usd < 0) {
-        throw new Error('Budget exceeded: cannot perform self-audit');
+      if (budget.remaining_budget_usd <= 0) {
+        throw new BudgetExceededError(`GToM budget exceeded. Refusing to self-audit. Spent: $${budget.total_committed_usd.toFixed(4)}, Max: $${budget.max_budget_usd.toFixed(4)}`);
       }
       progress.report('budget_checked', 25);
       options.cancellationToken?.throwIfCancelled();
@@ -378,8 +379,8 @@ export class GToM {
       return await this.observability.timeAsync('predictConflict', async (span) => {
       const start = performance.now();
       const budget = this.budgetLedger.getStatus();
-      if (budget.remaining_budget_usd < 0) {
-        throw new Error('Budget exceeded: cannot predict conflicts');
+      if (budget.remaining_budget_usd <= 0) {
+        throw new BudgetExceededError(`GToM budget exceeded. Refusing to predict conflicts. Spent: $${budget.total_committed_usd.toFixed(4)}, Max: $${budget.max_budget_usd.toFixed(4)}`);
       }
       progress.report('budget_checked', 25);
       options.cancellationToken?.throwIfCancelled();

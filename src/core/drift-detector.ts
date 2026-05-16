@@ -3,6 +3,9 @@ export interface MetricSnapshot {
   metric_name: string;
   value: number;
   context?: Record<string, any>;
+  // Relational metrics context
+  dyad_id?: string;
+  relational_type?: 'bid_response_rate' | 'repair_success_rate' | 'emotional_labor_balance' | 'attachment_signal_frequency' | 'conflict_risk_score';
 }
 
 export interface DriftDetectionConfig {
@@ -56,11 +59,28 @@ export class DriftDetector {
       metric_name,
       value,
       context,
+      dyad_id: context?.dyad_id,
+      relational_type: context?.relational_type,
     };
 
     const snapshots = this.snapshots.get(metric_name) ?? [];
     snapshots.push(snapshot);
     this.snapshots.set(metric_name, this.deterministicTrim(snapshots));
+  }
+
+  recordRelationalMetric(
+    metric_name: string,
+    value: number,
+    dyad_id: string,
+    relational_type: 'bid_response_rate' | 'repair_success_rate' | 'emotional_labor_balance' | 'attachment_signal_frequency' | 'conflict_risk_score',
+    context?: Record<string, any>
+  ): void {
+    this.recordSnapshot(metric_name, value, {
+      ...context,
+      dyad_id,
+      relational_type,
+      cohort: dyad_id, // Use dyad_id as default cohort for relational metrics
+    });
   }
 
   detectDrift(metric_name: string, options: { cohort?: string; now?: Date } = {}): DriftResult | null {
