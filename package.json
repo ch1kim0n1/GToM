@@ -25,6 +25,10 @@
       "require": "./dist/cli.js",
       "default": "./dist/cli.js"
     },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "require": "./dist/client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

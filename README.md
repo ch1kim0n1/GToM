@@ -115,6 +115,110 @@ See [docs/MCP_CONTRACT.md](docs/MCP_CONTRACT.md) for the tool list, auth scopes,
 - [ADRs](docs/adr/0001-observability-and-receipts.md)
 - API docs: run `npm run docs:api` and open `docs/api/index.html`.
 
+## Using GToM in your own application
+
+GToM works as a standalone cognitive-safety library — no other g-tools required. The three examples below show common integration patterns.
+
+### 1. Decision Audit Log
+
+Any application that logs consequential decisions can use GToM to detect whether cognitive vulnerabilities influenced those decisions over time.
+
+```typescript
+import { GToM } from './src/core/gtom.js';
+
+const gtom = new GToM();
+
+// Log each observation as the user encounters influence events
+await gtom.ingestObservation({
+  content: 'Upgrade now — only 3 seats left at this price!',
+  surface: 'checkout',
+  source: 'page_content',
+  userId: 'user-123',
+});
+
+await gtom.ingestObservation({
+  content: 'Experts unanimously recommend the premium plan.',
+  surface: 'checkout',
+  source: 'page_content',
+  userId: 'user-123',
+});
+
+// Read accumulated vulnerability state before the user commits
+const vulnerabilities = gtom.getVulnerabilities();
+const highRisk = vulnerabilities.filter(v => v.level === 'high');
+
+if (highRisk.length > 0) {
+  console.log('Decision made under influence:', highRisk.map(v => v.pattern));
+  // Log, flag for review, or surface a nudge to the user
+}
+```
+
+### 2. Content Moderation
+
+Detect manipulation patterns in user-generated content or agent outputs before they reach end users.
+
+```typescript
+import { GToM } from './src/core/gtom.js';
+
+const gtom = new GToM();
+
+async function moderateContent(text: string, authorId: string): Promise<boolean> {
+  await gtom.ingestObservation({
+    content: text,
+    surface: 'user_message',
+    source: 'user_input',
+    userId: authorId,
+  });
+
+  const vulns = gtom.getVulnerabilities();
+  // Check for patterns like authority_bias, scarcity_pressure, social_proof
+  const manipulativePatterns = vulns.filter(
+    v => ['authority_bias', 'scarcity_pressure', 'coercive_framing'].includes(v.pattern)
+      && v.level !== 'low'
+  );
+
+  if (manipulativePatterns.length > 0) {
+    console.warn(`Blocked content from ${authorId}: patterns=${manipulativePatterns.map(p => p.pattern)}`);
+    return false; // block
+  }
+  return true; // allow
+}
+```
+
+### 3. A/B Test Cognitive Safety
+
+Score whether a UI variant creates more decision fatigue or vulnerability than the control, using GToM's authenticity scorer as an objective signal.
+
+```typescript
+import { GToM } from './src/core/gtom.js';
+
+async function scoreCognitiveLoad(
+  variantLabel: string,
+  userContext: string,
+  proposedAction: string,
+): Promise<number> {
+  const gtom = new GToM();
+
+  // Score the decision authenticity for this variant
+  const result = await gtom.scoreDecisionAuthenticity({
+    context: userContext,
+    action: proposedAction,
+  });
+
+  console.log(`${variantLabel}: authenticity=${result.authenticity_score.toFixed(2)}, confidence=${result.confidence.toFixed(2)}`);
+  // Lower authenticity score signals more cognitive pressure / decision fatigue
+  return result.authenticity_score;
+}
+
+// Compare control vs. treatment variant
+const controlScore   = await scoreCognitiveLoad('control',   'User viewing pricing page', 'Choose monthly plan');
+const treatmentScore = await scoreCognitiveLoad('treatment', 'User viewing pricing page (urgent banner)', 'Choose monthly plan');
+
+if (treatmentScore < controlScore - 0.1) {
+  console.warn('Treatment variant reduces decision authenticity — review before shipping.');
+}
+```
+
 ## Environment
 
 | Variable | Purpose |
