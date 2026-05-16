@@ -4,6 +4,7 @@
  */
 
 import { logger } from './logger.js';
+import { LLMClient } from './llm-client.js';
 
 export interface ToMModelConfig {
   name: string;
@@ -23,25 +24,45 @@ export interface ToMInference {
 export class ToMModel {
   private config: ToMModelConfig;
   private inferences: Map<string, ToMInference> = new Map();
+  private llmClient: LLMClient;
 
-  constructor(config: ToMModelConfig) {
+  constructor(config: ToMModelConfig, llmClient?: LLMClient) {
     this.config = config;
+    this.llmClient = llmClient ?? new LLMClient();
     logger.info('ToMModel initialized', { name: config.name, version: config.version });
   }
 
   async infer(target: string): Promise<ToMInference> {
     logger.info('Running ToM inference', { target });
-    
-    // Placeholder for actual ToM inference
+
+    let belief = 'Unable to determine belief';
+    let intention = 'Unable to determine intention';
+    let confidence = 0.5;
+
+    try {
+      const response = await this.llmClient.call(
+        `Perform Theory of Mind inference for the following target entity: ${JSON.stringify(target)}
+Analyze their likely mental state, beliefs, and intentions based on available context.
+Respond with JSON only: { "belief": string, "intention": string, "confidence": number (0-1) }`,
+        { model: 'claude-haiku-4-5-20251001' },
+      );
+      const parsed = JSON.parse(response.content);
+      belief = parsed.belief ?? belief;
+      intention = parsed.intention ?? intention;
+      confidence = typeof parsed.confidence === 'number' ? parsed.confidence : confidence;
+    } catch {
+      logger.warn('ToM LLM inference failed, using defaults', { target });
+    }
+
     const inference: ToMInference = {
       id: `tom-${Date.now()}`,
       target,
-      belief: 'Analyzing beliefs...',
-      intention: 'Analyzing intentions...',
-      confidence: 0.7,
+      belief,
+      intention,
+      confidence,
       timestamp: new Date(),
     };
-    
+
     this.inferences.set(inference.id, inference);
     return inference;
   }

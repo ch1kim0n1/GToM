@@ -2,8 +2,8 @@
   "name": "gtom",
   "version": "0.1.0",
   "description": "Cognitive defense and Theory of Mind system",
-  "main": "./dist/core/index.js",
-  "types": "./dist/core/index.d.ts",
+  "main": "./dist/sdk.js",
+  "types": "./dist/sdk.d.ts",
   "bin": {
     "gtom": "./dist/cli.js",
     "gtom-gbrain-sync": "./dist/commands/gstack-gbrain-sync.js",
@@ -11,9 +11,14 @@
   },
   "exports": {
     ".": {
-      "types": "./dist/core/index.d.ts",
-      "require": "./dist/core/index.js",
-      "default": "./dist/core/index.js"
+      "types": "./dist/sdk.d.ts",
+      "require": "./dist/sdk.js",
+      "default": "./dist/sdk.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk.d.ts",
+      "require": "./dist/sdk.js",
+      "default": "./dist/sdk.js"
     },
     "./server": {
       "types": "./dist/server.d.ts",

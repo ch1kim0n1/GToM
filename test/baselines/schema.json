@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "current_schema_version": 2,
+  "migrations": [
+    {
+      "from": 0,
+      "to": 1,
+      "description": "Normalize legacy receipts into execution receipt schema v1 and preserve audit metadata."
+    },
+    {
+      "from": 1,
+      "to": 2,
+      "description": "Attach schema history, API stability, and rubric version metadata without changing score semantics."
+    }
+  ],
+  "created_at": "2026-05-16T22:33:38.989Z"
+}

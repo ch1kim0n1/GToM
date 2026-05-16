@@ -1,3 +1,20 @@
+## Quickstart (60 seconds)
+
+```bash
+npm install gtom
+```
+
+```typescript
+import { GToMSDK } from 'gtom';
+const gtom = new GToMSDK({ apiKey: process.env.ANTHROPIC_API_KEY });
+const result = await gtom.check('Limited time offer! Act NOW before it\'s too late!');
+console.log(result.safe, result.manipulationPatterns);
+```
+
+> No Docker. No services. Detect manipulation patterns and cognitive safety risks in any text.
+
+---
+
 # GToM
 
 GToM is the G-Stack cognitive defense and Theory of Mind service. It tracks cognitive vulnerability, detects influence patterns, scores decision authenticity, predicts conflicts, and exposes the same capabilities through CLI, HTTP, and MCP surfaces.
