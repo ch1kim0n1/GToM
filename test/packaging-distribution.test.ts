@@ -10,9 +10,9 @@ function read(relativePath: string): string {
 
 describe('packaging and distribution', () => {
   it('declares npm package entry points and exports', () => {
-    expect(pkg.main).toBe('./dist/core/index.js');
-    expect(pkg.types).toBe('./dist/core/index.d.ts');
-    expect(pkg.exports['.'].types).toBe('./dist/core/index.d.ts');
+    expect(pkg.main).toBe('./dist/sdk.js');
+    expect(pkg.types).toBe('./dist/sdk.d.ts');
+    expect(pkg.exports['.'].types).toBe('./dist/sdk.d.ts');
     expect(pkg.exports['./server'].require).toBe('./dist/server.js');
     expect(pkg.files).toEqual(expect.arrayContaining(['dist/', 'migrations/', 'scripts/postinstall.js']));
     expect(pkg.publishConfig).toMatchObject({ access: 'public', provenance: true });
