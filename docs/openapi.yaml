@@ -1,0 +1,538 @@
+openapi: 3.0.3
+info:
+  title: GToM API
+  description: |
+    GToM is the G-Stack cognitive defense and Theory of Mind service. It tracks cognitive vulnerability,
+    detects influence patterns, scores decision authenticity, predicts conflicts, and exposes the same
+    capabilities through CLI, HTTP, and MCP surfaces.
+  version: 1.0.0
+  contact:
+    name: G-Stack Team
+    url: https://github.com/gstack/gtom
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:3004
+    description: Local development server
+  - url: https://api.gtom.gstack.dev
+    description: Production server
+
+tags:
+  - name: Vulnerability
+    description: Cognitive vulnerability tracking
+  - name: Scoring
+    description: Decision authenticity scoring
+  - name: Conflict
+    description: Conflict prediction
+  - name: Health
+    description: Health and status endpoints
+  - name: Metrics
+    description: Observability and metrics
+
+paths:
+  /health/live:
+    get:
+      summary: Liveness probe
+      description: Returns 200 if the service is alive
+      operationId: getLiveness
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service is not healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /health/ready:
+    get:
+      summary: Readiness probe
+      description: Returns 200 if the service is ready to accept traffic
+      operationId: getReadiness
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessStatus'
+        '503':
+          description: Service is not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /vulnerability/ingest:
+    post:
+      summary: Ingest an observation
+      description: Record an observation and update vulnerability state
+      operationId: ingestObservation
+      tags:
+        - Vulnerability
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Observation'
+      responses:
+        '200':
+          description: Observation ingested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnerabilityState'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /vulnerability/state:
+    get:
+      summary: Get vulnerability state
+      description: Retrieve current vulnerability state
+      operationId: getVulnerabilityState
+      tags:
+        - Vulnerability
+      parameters:
+        - name: userId
+          in: query
+          schema:
+            type: string
+        - name: pattern
+          in: query
+          schema:
+            type: string
+        - name: level
+          in: query
+          schema:
+            type: string
+            enum: [low, medium, high]
+      responses:
+        '200':
+          description: Vulnerability state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnerabilityState'
+
+  /vulnerability/decay:
+    post:
+      summary: Apply vulnerability decay
+      description: Apply time-based decay to vulnerability scores
+      operationId: applyDecay
+      tags:
+        - Vulnerability
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decayRate:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                timeWindowMs:
+                  type: integer
+      responses:
+        '200':
+          description: Decay applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnerabilityState'
+
+  /vulnerability/reset:
+    post:
+      summary: Reset vulnerability state
+      description: Reset vulnerability state for a user or globally
+      operationId: resetVulnerability
+      tags:
+        - Vulnerability
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                confirm:
+                  type: boolean
+                  description: Must be true to confirm reset
+      responses:
+        '200':
+          description: Vulnerability state reset
+
+  /score/authenticity:
+    post:
+      summary: Score decision authenticity
+      description: Score the authenticity of a decision based on context and cognitive vulnerability
+      operationId: scoreAuthenticity
+      tags:
+        - Scoring
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthenticityRequest'
+      responses:
+        '200':
+          description: Authenticity score
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthenticityResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /conflict/predict:
+    post:
+      summary: Predict conflicts
+      description: Predict potential conflicts based on cognitive state and context
+      operationId: predictConflicts
+      tags:
+        - Conflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConflictRequest'
+      responses:
+        '200':
+          description: Conflict predictions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConflictResponse'
+
+  /audit/ice:
+    post:
+      summary: Run Cognitive ICE self-audit
+      description: Execute a self-audit of cognitive influence and escalation
+      operationId: runIceAudit
+      tags:
+        - Scoring
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                context:
+                  type: string
+                action:
+                  type: string
+      responses:
+        '200':
+          description: ICE audit results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IceAuditResponse'
+
+  /metrics:
+    get:
+      summary: Get metrics
+      description: Return Prometheus-compatible metrics
+      operationId: getMetrics
+      tags:
+        - Metrics
+      responses:
+        '200':
+          description: Metrics in Prometheus format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /metrics/otel:
+    get:
+      summary: Get OpenTelemetry metrics
+      description: Return OpenTelemetry-compatible metrics
+      operationId: getOtelMetrics
+      tags:
+        - Metrics
+      responses:
+        '200':
+          description: Metrics in OpenTelemetry format
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    ReadinessStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [healthy, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+
+    Observation:
+      type: object
+      required:
+        - content
+        - surface
+        - source
+      properties:
+        content:
+          type: string
+          description: The observed content
+        surface:
+          type: string
+          description: Where the content was observed (e.g., checkout, chat)
+        source:
+          type: string
+          description: Source of the content (e.g., page_content, user_input)
+        userId:
+          type: string
+          description: User identifier
+        timestamp:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+
+    VulnerabilityState:
+      type: object
+      properties:
+        userId:
+          type: string
+        vulnerabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vulnerability'
+        overallRisk:
+          type: string
+          enum: [low, medium, high, critical]
+        updatedAt:
+          type: string
+          format: date-time
+
+    Vulnerability:
+      type: object
+      properties:
+        pattern:
+          type: string
+          enum: [authority_bias, scarcity_pressure, social_proof, framing_effects, emotional_manipulation]
+        level:
+          type: string
+          enum: [low, medium, high]
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+        observations:
+          type: integer
+        lastSeen:
+          type: string
+          format: date-time
+
+    AuthenticityRequest:
+      type: object
+      required:
+        - context
+        - action
+      properties:
+        context:
+          type: string
+          description: The decision context
+        action:
+          type: string
+          description: The proposed action
+        userId:
+          type: string
+          description: User identifier
+        vulnerabilityState:
+          $ref: '#/components/schemas/VulnerabilityState'
+
+    AuthenticityResponse:
+      type: object
+      properties:
+        authenticityScore:
+          type: number
+          minimum: 0
+          maximum: 1
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        safe:
+          type: boolean
+        manipulationPatterns:
+          type: array
+          items:
+            type: string
+        recommendations:
+          type: array
+          items:
+            type: string
+        costUSD:
+          type: number
+        durationMs:
+          type: integer
+
+    ConflictRequest:
+      type: object
+      required:
+        - participants
+        - context
+      properties:
+        participants:
+          type: array
+          items:
+            type: string
+          description: User IDs of participants
+        context:
+          type: string
+          description: The conflict context
+        vulnerabilityStates:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnerabilityState'
+
+    ConflictResponse:
+      type: object
+      properties:
+        conflictProbability:
+          type: number
+          minimum: 0
+          maximum: 1
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        predictedConflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              participants:
+                type: array
+                items:
+                  type: string
+              reason:
+                type: string
+              likelihood:
+                type: number
+        recommendations:
+          type: array
+          items:
+            type: string
+
+    IceAuditResponse:
+      type: object
+      properties:
+        influence:
+          type: object
+          properties:
+            detected:
+              type: boolean
+            patterns:
+              type: array
+              items:
+                type: string
+        escalation:
+          type: object
+          properties:
+            detected:
+              type: boolean
+            level:
+              type: string
+            recommendations:
+              type: array
+              items:
+                type: string
+        cognitiveLoad:
+          type: object
+          properties:
+            score:
+              type: number
+            level:
+              type: string
+        overall:
+          type: string
+          enum: [safe, caution, unsafe]
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - bearerAuth: []
