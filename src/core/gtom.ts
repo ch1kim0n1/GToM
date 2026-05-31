@@ -134,10 +134,14 @@ export class GToM {
       sandbox?: HealthProbe;
     };
   } = {}) {
-    this.gbrainEndpoint = config.gbrainEndpoint
+    // Distinguish an explicitly-configured endpoint from the hardcoded local
+    // default. Only explicit endpoints are forwarded to GBrainClient (and thus
+    // subjected to the SSRF guard); when nothing is configured we let
+    // GBrainClient apply its own exempt localhost default. See issue #52.
+    const configuredGbrainEndpoint = config.gbrainEndpoint
       ?? process.env.GTOM_GBRAIN_ENDPOINT
-      ?? process.env.GBRAIN_ENDPOINT
-      ?? 'http://localhost:3000';
+      ?? process.env.GBRAIN_ENDPOINT;
+    this.gbrainEndpoint = configuredGbrainEndpoint ?? 'http://localhost:3000';
     this.healthCheckTimeoutMs = config.healthCheckTimeoutMs ?? Number(process.env.GTOM_HEALTH_TIMEOUT_MS ?? 2500);
     this.syncFreshnessMaxMs = config.syncFreshnessMaxMs ?? Number(process.env.GTOM_SYNC_FRESHNESS_MAX_MS ?? 7 * 24 * 60 * 60 * 1000);
     this.contextCache = new LRUCache<string, string[]>(
@@ -150,7 +154,7 @@ export class GToM {
     );
     this.healthProbes = config.healthProbes ?? {};
     this.gbrainClient = config.gbrainClient ?? new GBrainClient({
-      endpoint: this.gbrainEndpoint,
+      endpoint: configuredGbrainEndpoint,
       authToken: config.gbrainAuthToken,
       mode: config.gbrainMode,
       mcpClient: config.gbrainMcpClient,
