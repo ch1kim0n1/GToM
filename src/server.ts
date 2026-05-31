@@ -13,21 +13,29 @@ import { GToM } from './core/gtom';
 import { StructuredLogger } from './core/structured-logger.js';
 import { globalObservability } from './core/observability';
 import { sanitizeJsonValue, sanitizeUserString } from './core/input-sanitizer';
-import { FixedWindowRateLimiter, hashToken } from './core/security';
+import {
+  AccessScope,
+  FixedWindowRateLimiter,
+  PermissionManager,
+  constantTimeEquals,
+  hashToken,
+} from './core/security';
+import { createAuthMiddleware } from './core/token-auth';
+import { defaultSecretManager } from './core/secret-manager';
 import { CancellationToken } from './core/performance';
 import {
   BidAuthenticityInputSchema,
+  ConflictAttemptSchema,
   RelationalConflictRequestSchema,
 } from './types/index';
 
+// HTTP request schema for conflict prediction. It reuses the canonical
+// `ConflictAttemptSchema` from types/ (single source of truth for an attempt's
+// shape) and adds HTTP-layer-specific fields. `task` is constrained to a
+// non-empty string here because the HTTP layer sanitizes it as a string.
 export const ConflictPredictionRequestSchema = z.object({
   task: z.string().min(1),
-  active_attempts: z.array(z.object({
-    attempt_id: z.string().uuid(),
-    config_id: z.string().uuid(),
-    current_state: z.record(z.unknown()),
-    recent_actions: z.array(z.string()),
-  })).optional().default([]),
+  active_attempts: z.array(ConflictAttemptSchema).optional().default([]),
   context: z.string().optional(),
   constraints: z.array(z.string()).optional(),
 });
@@ -63,7 +71,15 @@ export class GToMServer {
   private readonly maxBodyBytes: number;
   private readonly shutdownDrainTimeoutMs: number;
   private draining = false;
+  private shuttingDown = false;
   private activeRequests = 0;
+  private signalHandler: (() => void) | null = null;
+  private readonly registerSignalHandlers: boolean;
+  private readonly authRequired: boolean;
+  private readonly trustProxy: boolean;
+  private readonly metricsRequireAuth: boolean;
+  private readonly authMiddleware: { authenticate: (authorization: string) => { success: boolean; error?: string; token?: { userId?: string; sub?: string; roles?: string[] } } } | null;
+  private readonly permissions: PermissionManager;
 
   constructor(gtom: GToM, port: number = 3003) {
     this.gtom = gtom;
@@ -80,6 +96,76 @@ export class GToMServer {
     this.corsOrigin = process.env.GTOM_HTTP_CORS_ORIGIN ?? '*';
     this.maxBodyBytes = parseInt(process.env.GTOM_HTTP_MAX_BODY_BYTES ?? `${1024 * 1024}`, 10);
     this.shutdownDrainTimeoutMs = parseInt(process.env.GTOM_SHUTDOWN_DRAIN_TIMEOUT_MS ?? '25000', 10);
+    // Signal-handler registration is opt-out for embedded use: set
+    // GTOM_REGISTER_SIGNAL_HANDLERS=false to manage shutdown yourself.
+    this.registerSignalHandlers = process.env.GTOM_REGISTER_SIGNAL_HANDLERS !== 'false';
+
+    // Authentication: enabled by default. Opt out for local dev with
+    // GTOM_HTTP_AUTH_REQUIRED=false.
+    this.authRequired = process.env.GTOM_HTTP_AUTH_REQUIRED !== 'false';
+    // Only trust X-Forwarded-For for rate-limit identity when an upstream proxy
+    // is explicitly configured as trusted.
+    this.trustProxy = process.env.GTOM_TRUSTED_PROXY === 'true';
+    // /metrics is auth-gated by default (set GTOM_METRICS_REQUIRE_AUTH=false to
+    // expose without auth, e.g. when bound to a private interface).
+    this.metricsRequireAuth = process.env.GTOM_METRICS_REQUIRE_AUTH !== 'false';
+    this.permissions = new PermissionManager();
+    const httpSecret = process.env.GTOM_HTTP_SECRET ?? process.env.GTOM_MCP_SECRET;
+    this.authMiddleware = httpSecret
+      ? createAuthMiddleware({ secret: httpSecret, tool: 'gtom-http', defaultRoles: ['read'] })
+      : null;
+  }
+
+  /**
+   * Authorize an HTTP request for a given required scope. Returns null on
+   * success (request may proceed) or an HTTP status + message on rejection.
+   */
+  private authorizeRequest(
+    req: IncomingMessage,
+    requiredScopes: AccessScope[],
+    resource: string,
+  ): { status: number; error: string } | null {
+    if (!this.authRequired) return null;
+
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return { status: 401, error: 'Authentication required' };
+    }
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+
+    // 1) Configured static tokens (admin/write/read) compared in constant time.
+    const configured: Array<[string | undefined, AccessScope[], string]> = [
+      [defaultSecretManager.getSecret('GTOM_HTTP_ADMIN_TOKEN'), ['admin'], 'http-admin'],
+      [defaultSecretManager.getSecret('GTOM_HTTP_WRITE_TOKEN'), ['read', 'write'], 'http-writer'],
+      [defaultSecretManager.getSecret('GTOM_HTTP_READ_TOKEN'), ['read'], 'http-reader'],
+    ];
+    for (const [configuredToken, scopes, userId] of configured) {
+      if (configuredToken && constantTimeEquals(token, configuredToken)) {
+        const principal = this.permissions.getPrincipal(userId, scopes);
+        return this.permissions.authorize(principal, requiredScopes, resource)
+          ? null
+          : { status: 403, error: `Forbidden: requires ${requiredScopes.join(', ')} scope` };
+      }
+    }
+
+    // 2) Signed bearer tokens via token-auth (requires GTOM_HTTP_SECRET).
+    if (this.authMiddleware) {
+      const result = this.authMiddleware.authenticate(authHeader);
+      if (result.success) {
+        const roles = (result.token?.roles ?? ['read']).filter((r): r is AccessScope =>
+          ['read', 'write', 'admin'].includes(r),
+        );
+        const principal = this.permissions.getPrincipal(
+          String(result.token?.userId ?? result.token?.sub ?? `token-${hashToken(token)}`),
+          roles.length > 0 ? roles : ['read'],
+        );
+        return this.permissions.authorize(principal, requiredScopes, resource)
+          ? null
+          : { status: 403, error: `Forbidden: requires ${requiredScopes.join(', ')} scope` };
+      }
+    }
+
+    return { status: 401, error: 'Authentication failed: invalid token' };
   }
 
   /**
@@ -99,9 +185,17 @@ export class GToMServer {
       this.handleRequest(req, res);
     });
 
-    // Add SIGTERM and SIGINT handlers for graceful shutdown
-    process.on('SIGTERM', () => this.shutdown());
-    process.on('SIGINT', () => this.shutdown());
+    // Register SIGTERM/SIGINT handlers exactly once per instance, storing a
+    // bound reference so they can be removed on stop()/shutdown(). This avoids
+    // leaking listeners (MaxListenersExceededWarning) and prevents a single
+    // signal from triggering multiple overlapping shutdowns.
+    if (this.registerSignalHandlers && !this.signalHandler) {
+      this.signalHandler = () => {
+        void this.shutdown();
+      };
+      process.on('SIGTERM', this.signalHandler);
+      process.on('SIGINT', this.signalHandler);
+    }
 
     return new Promise((resolve, reject) => {
       this.server.listen(this.port, () => {
@@ -185,6 +279,32 @@ export class GToMServer {
         return;
       }
 
+      // Authorization gate. /health/* is always public; /gtom/* requires the
+      // scope appropriate to the operation; /metrics is auth-gated by default.
+      const isGtomRoute = url?.startsWith('/gtom/') ?? false;
+      const isMetricsRoute = url === '/metrics' || url === '/metrics/otel';
+      if (isGtomRoute || (isMetricsRoute && this.metricsRequireAuth)) {
+        const writeRoutes = new Set([
+          '/gtom/predict-conflicts',
+          '/gtom/predict-conflicts/stream',
+          '/gtom/predict-relational-conflicts',
+          '/gtom/score-bid',
+        ]);
+        const requiredScopes: AccessScope[] = writeRoutes.has(url ?? '') ? ['write'] : ['read'];
+        const denial = this.authorizeRequest(req, requiredScopes, url ?? '/');
+        if (denial) {
+          globalObservability.audit.recordSecurityEvent({
+            event_type: 'http_authorization_denied',
+            actor: identity,
+            resource: url ?? '/',
+            metadata: { status: denial.status },
+          });
+          res.writeHead(denial.status, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: denial.error }));
+          return;
+        }
+      }
+
       if (url === '/gtom/predict-conflicts' && method === 'POST') {
         await this.handlePredictConflicts(req, res);
       } else if (url === '/gtom/predict-conflicts/stream' && method === 'POST') {
@@ -237,8 +357,22 @@ export class GToMServer {
 
   private async handlePredictRelationalConflicts(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await this.readJsonBody(req, res, '/gtom/predict-relational-conflicts');
-    if (!body) return;
-    const request = RelationalConflictRequestSchema.parse(sanitizeJsonValue(body, 'predict-relational-conflicts'));
+    if (body === null) return;
+    let request;
+    try {
+      const sanitized = sanitizeJsonValue(body, 'predict-relational-conflicts');
+      const parsed = RelationalConflictRequestSchema.safeParse(sanitized);
+      if (!parsed.success) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request', details: parsed.error.flatten() }));
+        return;
+      }
+      request = parsed.data;
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body', details: error instanceof Error ? error.message : 'Bad input' }));
+      return;
+    }
     const result = await this.gtom.predictRelationalConflicts(request);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
@@ -246,8 +380,22 @@ export class GToMServer {
 
   private async handleScoreBid(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = await this.readJsonBody(req, res, '/gtom/score-bid');
-    if (!body) return;
-    const request = BidAuthenticityInputSchema.parse(sanitizeJsonValue(body, 'score-bid'));
+    if (body === null) return;
+    let request;
+    try {
+      const sanitized = sanitizeJsonValue(body, 'score-bid');
+      const parsed = BidAuthenticityInputSchema.safeParse(sanitized);
+      if (!parsed.success) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request', details: parsed.error.flatten() }));
+        return;
+      }
+      request = parsed.data;
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body', details: error instanceof Error ? error.message : 'Bad input' }));
+      return;
+    }
     const result = await this.gtom.scoreBid(request);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
@@ -318,7 +466,19 @@ export class GToMServer {
     }
     const body = bufferModule.Buffer.concat(buffers).toString();
 
-    const rawBody = sanitizeJsonValue(JSON.parse(body), 'predict-conflicts');
+    let rawBody: unknown;
+    try {
+      rawBody = sanitizeJsonValue(JSON.parse(body), 'predict-conflicts');
+    } catch (error) {
+      // Malformed JSON or sanitizer rejection is a client error (400), not a
+      // server error. Do NOT let it propagate to the 500 handler.
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Invalid request body',
+        details: error instanceof Error ? error.message : 'Malformed JSON',
+      }));
+      return null;
+    }
     const parsed = ConflictPredictionRequestSchema.safeParse(rawBody);
     if (!parsed.success) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -360,7 +520,16 @@ export class GToMServer {
       }
       buffers.push(buffer);
     }
-    return JSON.parse(bufferModule.Buffer.concat(buffers).toString() || '{}');
+    try {
+      return JSON.parse(bufferModule.Buffer.concat(buffers).toString() || '{}');
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: 'Invalid request body',
+        details: error instanceof Error ? error.message : 'Malformed JSON',
+      }));
+      return null;
+    }
   }
 
   private toConflictPredictionResponse(task: string, result: any): Record<string, unknown> {
@@ -419,11 +588,19 @@ export class GToMServer {
     if (auth) {
       return `token:${hashToken(auth.replace(/^Bearer\s+/i, ''))}`;
     }
-    const forwardedFor = req.headers['x-forwarded-for'];
-    const ip = Array.isArray(forwardedFor)
-      ? forwardedFor[0]
-      : forwardedFor?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
-    return `ip:${ip}`;
+    // Only honor the client-controlled X-Forwarded-For header when an upstream
+    // proxy is explicitly trusted; otherwise an attacker could rotate XFF to
+    // mint unlimited fresh rate-limit buckets. Default to the real socket peer.
+    if (this.trustProxy) {
+      const forwardedFor = req.headers['x-forwarded-for'];
+      const forwarded = Array.isArray(forwardedFor)
+        ? forwardedFor[0]
+        : forwardedFor?.split(',')[0]?.trim();
+      if (forwarded) {
+        return `ip:${forwarded}`;
+      }
+    }
+    return `ip:${req.socket.remoteAddress || 'unknown'}`;
   }
 
   private tenantIdentity(req: IncomingMessage): string {
@@ -441,16 +618,30 @@ export class GToMServer {
    * Stop the server
    */
   stop(): void {
+    this.removeSignalHandlers();
     if (this.server) {
       this.server.close();
       this.server = null;
     }
   }
 
+  private removeSignalHandlers(): void {
+    if (this.signalHandler) {
+      process.removeListener('SIGTERM', this.signalHandler);
+      process.removeListener('SIGINT', this.signalHandler);
+      this.signalHandler = null;
+    }
+  }
+
   /**
-   * Graceful shutdown
+   * Graceful shutdown. Idempotent: concurrent or repeated invocations after the
+   * first are no-ops.
    */
   async shutdown(): Promise<void> {
+    if (this.shuttingDown) {
+      return;
+    }
+    this.shuttingDown = true;
     this.logger.info('Initiating graceful shutdown');
     this.draining = true;
 
