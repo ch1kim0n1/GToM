@@ -5,7 +5,11 @@ const os = require('node:os');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 
-if (process.env.GTOM_SKIP_POSTINSTALL === '1') {
+// Side effects (creating ~/.gtom/gtom.sqlite, running migrations, rebuilding
+// the native better-sqlite3 binding) are OPT-IN. By default, installing gtom
+// performs no filesystem/DB mutations and does not require a C++ toolchain.
+// Run `gtom migrate` (or set GTOM_RUN_POSTINSTALL=1) to provision the DB.
+if (process.env.GTOM_SKIP_POSTINSTALL === '1' || process.env.GTOM_RUN_POSTINSTALL !== '1') {
   process.exit(0);
 }
 

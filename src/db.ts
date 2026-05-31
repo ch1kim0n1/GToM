@@ -1,15 +1,26 @@
-import Database from 'better-sqlite3';
+// `better-sqlite3` is an OPTIONAL native dependency. It is loaded lazily (only
+// when the SQLite-backed history is actually used) so importing this module —
+// or the package as a whole — never crashes on machines without a C++ toolchain
+// or the compiled binding.
+import type Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
 const DATA_DIR = process.env.GTOM_DATA_DIR || path.join(process.env.HOME || '/tmp', '.gtom');
-fs.mkdirSync(DATA_DIR, { recursive: true });
+
+function loadDatabaseCtor(): typeof Database {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require('better-sqlite3');
+  return (mod.default ?? mod) as typeof Database;
+}
 
 let _db: ReturnType<typeof Database> | null = null;
 
 export function getDb(): ReturnType<typeof Database> {
   if (_db) return _db;
-  _db = new Database(path.join(DATA_DIR, 'gtom.db'));
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const DatabaseCtor = loadDatabaseCtor();
+  _db = new DatabaseCtor(path.join(DATA_DIR, 'gtom.db'));
   _db.exec(`
     CREATE TABLE IF NOT EXISTS analyses (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,

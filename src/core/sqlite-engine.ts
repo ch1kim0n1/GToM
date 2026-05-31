@@ -2,8 +2,17 @@
  * SQLite engine implementation for GToM
  */
 
-import Database from 'better-sqlite3';
+// `better-sqlite3` is an OPTIONAL native dependency, loaded lazily in
+// initialize() so importing this module never crashes when the binding is
+// absent (no C++ toolchain). Type-only import keeps the types available.
+import type Database from 'better-sqlite3';
 import { BrainEngine, EngineConfig, QueryOptions, QueryResult, DatabaseStats } from './engine.js';
+
+function loadDatabaseCtor(): typeof Database {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const mod = require('better-sqlite3');
+  return (mod.default ?? mod) as typeof Database;
+}
 
 export class SQLiteEngine implements BrainEngine {
   private db: Database.Database | null = null;
@@ -19,14 +28,15 @@ export class SQLiteEngine implements BrainEngine {
 
   async initialize(): Promise<void> {
     const dbPath = this.config.dbPath || ':memory:';
+    const DatabaseCtor = loadDatabaseCtor();
     try {
-      this.db = new Database(dbPath);
+      this.db = new DatabaseCtor(dbPath);
     } catch (error) {
       if (!this.config.fallbackToMemory) {
         throw error;
       }
       this.fallbackReason = `Failed to open ${dbPath}: ${(error as Error).message}`;
-      this.db = new Database(':memory:');
+      this.db = new DatabaseCtor(':memory:');
     }
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');

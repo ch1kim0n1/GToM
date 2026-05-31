@@ -9,8 +9,14 @@
  * - Real API integration with retry logic
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
+// `@anthropic-ai/sdk` and `openai` are OPTIONAL peer dependencies. They must NOT
+// be imported statically on the core code path, or `require('gtom')` crashes
+// with "Cannot find module 'openai'" whenever a consumer installs gtom without
+// them (the documented rule-based / no-LLM mode). We import them only as types
+// here and load the runtime modules lazily, guarded by try/catch, the first
+// time an API client is actually needed (see ensureAnthropicClient/ensureOpenAIClient).
+import type Anthropic from '@anthropic-ai/sdk';
+import type OpenAI from 'openai';
 import { encoding_for_model, get_encoding } from 'tiktoken';
 import { createLogger } from './structured-logger.js';
 import { BudgetLedger } from './budget-ledger.js';
@@ -157,6 +163,10 @@ export class LLMClient {
   >>;
   private anthropicClient: Anthropic | null = null;
   private openaiClient: OpenAI | null = null;
+  // Whether a key was supplied (so a provider is "available") even though the
+  // concrete SDK client is constructed lazily on first use.
+  private readonly anthropicEnabled: boolean;
+  private readonly openaiEnabled: boolean;
   private totalCostUsd: number = 0;
   private totalTokens: number = 0;
   private callCount: number = 0;
@@ -185,18 +195,60 @@ export class LLMClient {
     this.resolver = config.resolver ?? 'llm';
     this.scope = config.scope ?? 'default';
 
-    if (this.config.anthropicApiKey) {
-      this.anthropicClient = new Anthropic({
+    // Mark providers as available when a key is present, but defer loading the
+    // optional SDK module until the first call (see ensure* helpers).
+    this.anthropicEnabled = Boolean(this.config.anthropicApiKey);
+    this.openaiEnabled = Boolean(this.config.openaiApiKey);
+  }
+
+  /**
+   * Lazily construct the Anthropic client. The SDK is an optional peer; if it
+   * is not installed we degrade gracefully (return null) so rule-based paths
+   * keep working. Returns null when no key is configured.
+   */
+  private ensureAnthropicClient(): Anthropic | null {
+    if (!this.anthropicEnabled) return null;
+    if (this.anthropicClient) return this.anthropicClient;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require('@anthropic-ai/sdk');
+      const AnthropicCtor = (mod.default ?? mod) as typeof Anthropic;
+      this.anthropicClient = new AnthropicCtor({
         apiKey: this.config.anthropicApiKey,
         timeout: this.config.timeoutMs,
       });
+      return this.anthropicClient;
+    } catch (error) {
+      globalObservability.logger.warn(
+        'Anthropic API key configured but @anthropic-ai/sdk is not installed; install it to enable Anthropic models',
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+      return null;
     }
+  }
 
-    if (this.config.openaiApiKey) {
-      this.openaiClient = new OpenAI({
+  /**
+   * Lazily construct the OpenAI client. The SDK is an optional peer; missing it
+   * degrades gracefully. Returns null when no key is configured.
+   */
+  private ensureOpenAIClient(): OpenAI | null {
+    if (!this.openaiEnabled) return null;
+    if (this.openaiClient) return this.openaiClient;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require('openai');
+      const OpenAICtor = (mod.default ?? mod) as typeof OpenAI;
+      this.openaiClient = new OpenAICtor({
         apiKey: this.config.openaiApiKey,
         timeout: this.config.timeoutMs,
       });
+      return this.openaiClient;
+    } catch (error) {
+      globalObservability.logger.warn(
+        'OpenAI API key configured but openai is not installed; install it to enable OpenAI models',
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+      return null;
     }
   }
 
@@ -239,12 +291,12 @@ export class LLMClient {
     let outputTokens: number;
 
     try {
-      if (this.anthropicClient && this.isAnthropicModel(model)) {
+      if (this.isAnthropicModel(model) && this.ensureAnthropicClient()) {
         const result = await this.callAnthropic(prompt, model, maxTokens, temperature);
         content = result.content;
         inputTokens = result.inputTokens;
         outputTokens = result.outputTokens;
-      } else if (this.openaiClient && this.isOpenAIModel(model)) {
+      } else if (this.isOpenAIModel(model) && this.ensureOpenAIClient()) {
         const result = await this.callOpenAI(prompt, model, maxTokens, temperature);
         content = result.content;
         inputTokens = result.inputTokens;
@@ -591,8 +643,8 @@ export class LLMClient {
       };
     }
     const availableProviders: Array<'anthropic' | 'openai'> = [];
-    if (this.anthropicClient) availableProviders.push('anthropic');
-    if (this.openaiClient) availableProviders.push('openai');
+    if (this.ensureAnthropicClient()) availableProviders.push('anthropic');
+    if (this.ensureOpenAIClient()) availableProviders.push('openai');
     if (availableProviders.length === 0) {
       return {
         tier: 0,
