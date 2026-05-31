@@ -74,7 +74,7 @@ export class FileSecretManager {
     const now = new Date().toISOString();
     const existing = store.secrets[safeName];
     const version = existing ? existing.version + 1 : 1;
-    const encrypted = this.encrypt(safeValue);
+    const encrypted = this.encrypt(safeValue, safeName);
     const previous = existing
       ? [
           ...(existing.previous_versions ?? []),
@@ -145,7 +145,7 @@ export class FileSecretManager {
     return this.filePath;
   }
 
-  private encrypt(value: string): {
+  private encrypt(value: string, name?: string): {
     ciphertext: string;
     iv?: string;
     auth_tag?: string;
@@ -153,6 +153,27 @@ export class FileSecretManager {
     key_id: string;
   } {
     if (!this.masterKey) {
+      // base64 is NOT encryption — it is trivially reversible. Refuse to store
+      // sensitive secrets (API keys / tokens) this way unless the operator has
+      // explicitly opted in, and always warn + audit when we fall back to it.
+      if (name && isSensitiveSecretName(name) && process.env.GTOM_ALLOW_PLAINTEXT_SECRETS !== 'true') {
+        throw new Error(
+          `Refusing to store sensitive secret "${name}" without GTOM_SECRETS_MASTER_KEY: ` +
+            `base64 storage is not encryption. Set GTOM_SECRETS_MASTER_KEY to encrypt at rest, ` +
+            `or set GTOM_ALLOW_PLAINTEXT_SECRETS=true to override (NOT recommended).`,
+        );
+      }
+      globalObservability.logger.warn(
+        'GTOM_SECRETS_MASTER_KEY is not set: secret is stored as REVERSIBLE base64, NOT encrypted at rest. ' +
+          'Set GTOM_SECRETS_MASTER_KEY to enable AES-256-GCM encryption.',
+        { secret_name: name, file: this.filePath },
+      );
+      globalObservability.audit.recordSecurityEvent({
+        event_type: 'secret_stored_unencrypted',
+        actor: 'local',
+        resource: name ?? 'unknown',
+        metadata: { encoding: 'base64', file: this.filePath },
+      });
       return {
         ciphertext: Buffer.from(value, 'utf8').toString('base64'),
         encoding: 'base64',
@@ -226,6 +247,14 @@ export const defaultSecretManager = new FileSecretManager();
 
 function sanitizeSecretName(name: string): string {
   return sanitizeIdentifier(name, 'secret name', 128);
+}
+
+/**
+ * Heuristic for names that almost certainly hold credentials and therefore must
+ * not be stored as reversible base64 without an explicit override.
+ */
+function isSensitiveSecretName(name: string): boolean {
+  return /(api[_-]?key|secret|token|password|passwd|credential|auth)/i.test(name);
 }
 
 function publicMetadata(record: SecretRecord): StoredSecretMetadata {

@@ -7,6 +7,7 @@ import {
 } from '../types/index.js';
 import { globalObservability } from './observability.js';
 import { defaultSecretManager } from './secret-manager.js';
+import { sanitizeUrl } from './input-sanitizer.js';
 
 export type GBrainIntegrationMode = 'http' | 'mcp';
 
@@ -108,12 +109,16 @@ export class GBrainClient {
   private circuitState: CircuitBreakerState = 'closed';
 
   constructor(config: GBrainClientConfig = {}) {
-    this.endpoint = this.normalizeEndpoint(
-      config.endpoint
-        ?? process.env.GTOM_GBRAIN_ENDPOINT
-        ?? process.env.GBRAIN_ENDPOINT
-        ?? 'http://localhost:3000',
-    );
+    const configuredEndpoint = config.endpoint
+      ?? process.env.GTOM_GBRAIN_ENDPOINT
+      ?? process.env.GBRAIN_ENDPOINT;
+    // Explicitly-configured endpoints are subject to the SSRF guard in
+    // sanitizeUrl (private/loopback/metadata hosts blocked unless
+    // GTOM_ALLOW_PRIVATE_ENDPOINTS=true). The hardcoded localhost default used
+    // when nothing is configured is exempt so out-of-the-box local dev works.
+    this.endpoint = configuredEndpoint !== undefined
+      ? sanitizeUrl(configuredEndpoint, 'GBrain endpoint')
+      : this.normalizeEndpoint('http://localhost:3000');
     this.authToken = config.authToken
       ?? defaultSecretManager.getSecret('GTOM_GBRAIN_AUTH_TOKEN')
       ?? defaultSecretManager.getSecret('GBRAIN_AUTH_TOKEN');

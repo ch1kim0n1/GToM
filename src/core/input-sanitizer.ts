@@ -50,7 +50,60 @@ export function sanitizeUrl(value: unknown, fieldName: string): string {
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new Error(`${fieldName} must use http or https`);
   }
+  // SSRF guard: block private / loopback / link-local / metadata hosts unless
+  // the operator has explicitly opted in for local development.
+  if (process.env.GTOM_ALLOW_PRIVATE_ENDPOINTS !== 'true' && isBlockedHost(parsed.hostname)) {
+    throw new Error(
+      `${fieldName} resolves to a private, loopback, link-local, or metadata host, which is blocked. ` +
+        `Set GTOM_ALLOW_PRIVATE_ENDPOINTS=true to allow this in local development.`,
+    );
+  }
   return parsed.toString().replace(/\/$/, '');
+}
+
+/**
+ * Returns true for hostnames/IPs that point at the local machine or an internal
+ * network and therefore must not be reachable via server-side fetch (SSRF).
+ * Covers RFC1918, loopback, link-local (incl. cloud metadata 169.254.169.254),
+ * IPv6 loopback/ULA/link-local, and `*.local` / `localhost`.
+ */
+export function isBlockedHost(hostname: string): boolean {
+  // URL hostname keeps IPv6 brackets; strip them.
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
+    return true;
+  }
+
+  // IPv4
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const octets = ipv4.slice(1, 5).map(Number);
+    if (octets.some((o) => o > 255)) return true; // malformed → block
+    const [a, b] = octets;
+    if (a === 10) return true; // 10.0.0.0/8
+    if (a === 127) return true; // loopback
+    if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
+    if (a === 192 && b === 168) return true; // 192.168.0.0/16
+    if (a === 169 && b === 254) return true; // link-local incl. 169.254.169.254 metadata
+    if (a === 0) return true; // 0.0.0.0/8
+    if (a >= 224) return true; // multicast / reserved
+    if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 CGNAT
+    return false;
+  }
+
+  // IPv6
+  if (host.includes(':')) {
+    if (host === '::1' || host === '::') return true; // loopback / unspecified
+    if (host.startsWith('fe80')) return true; // link-local
+    if (host.startsWith('fc') || host.startsWith('fd')) return true; // unique local fc00::/7
+    // IPv4-mapped IPv6, e.g. ::ffff:127.0.0.1
+    const mapped = host.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (mapped) return isBlockedHost(mapped[1]);
+    return false;
+  }
+
+  return false;
 }
 
 export function sanitizePath(value: unknown, fieldName: string): string {
