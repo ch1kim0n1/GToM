@@ -172,7 +172,13 @@ export const ConflictPredictionRequestSchema = z.object({
   active_attempts: z.array(z.object({
     attempt_id: z.string().uuid(),
     config_id: z.string().uuid(),
-    current_state: z.record(z.any()),
+    current_state: z.record(z.union([
+      z.string().max(1000),
+      z.number(),
+      z.boolean(),
+      z.null(),
+      z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).max(100),
+    ])).max(50),
     recent_actions: z.array(z.string()),
   })),
 });

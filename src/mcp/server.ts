@@ -80,7 +80,11 @@ class GToMMCPServer {
     this.gtom = new GToM();
 
     // Initialize authentication middleware
-    const authSecret = defaultSecretManager.getSecret('GTOM_AUTH_SECRET') || 'dev-secret-key';
+    const mcpSecret = process.env.GTOM_MCP_SECRET;
+    if (!mcpSecret) {
+      throw new Error('GTOM_MCP_SECRET environment variable must be set');
+    }
+    const authSecret = mcpSecret;
     this.authMiddleware = createAuthMiddleware({
       secret: authSecret,
       tool: 'gtom',

@@ -16,7 +16,26 @@ const healthPort = process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT, 1
 const gbrainEndpoint = process.env.GTOM_GBRAIN_ENDPOINT || process.env.GBRAIN_ENDPOINT || 'http://localhost:3000';
 const logger = new StructuredLogger('gtom-serve');
 
+function validateConfig(): void {
+  const errors: string[] = [];
+
+  const rateLimitRpm = parseInt(process.env.GTOM_HTTP_RATE_LIMIT_RPM ?? '120', 10);
+  if (isNaN(rateLimitRpm) || rateLimitRpm <= 0) {
+    errors.push('GTOM_HTTP_RATE_LIMIT_RPM must be a positive integer');
+  }
+
+  const healthTimeout = Number(process.env.GTOM_HEALTH_TIMEOUT_MS ?? '2500');
+  if (isNaN(healthTimeout) || healthTimeout <= 0) {
+    errors.push('GTOM_HEALTH_TIMEOUT_MS must be a positive number');
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Configuration errors:\n${errors.map(e => `  - ${e}`).join('\n')}`);
+  }
+}
+
 async function main() {
+  validateConfig();
   logger.info('Starting server');
   logger.info('GBrain endpoint', { gbrainEndpoint });
   logger.info('Port', { port });

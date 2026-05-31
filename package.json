@@ -144,5 +144,9 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "keywords": ["theory-of-mind", "gtom", "llm", "conflict-detection", "ai-safety"],
+  "repository": {"type": "git", "url": "https://github.com/ch1kim0n1/GToM.git"},
+  "homepage": "https://github.com/ch1kim0n1/GToM#readme",
+  "bugs": {"url": "https://github.com/ch1kim0n1/GToM/issues"}
 }

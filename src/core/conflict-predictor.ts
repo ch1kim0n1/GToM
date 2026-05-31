@@ -10,6 +10,7 @@ import {
   RelationalConflictType,
 } from '../types/index.js';
 import { LLMClient, LLMCallResult } from './llm-client.js';
+import { globalObservability } from './observability.js';
 
 interface LLMCaller {
   call(prompt: string, options?: { model?: string; maxTokens?: number; temperature?: number }): Promise<LLMCallResult>;
@@ -77,8 +78,11 @@ export class ConflictPredictor {
       if (parsed.predicted_conflicts.length > 0) {
         return parsed;
       }
-    } catch {
-      // Fall through to deterministic local detector when LLM access is unavailable.
+    } catch (error) {
+      globalObservability.logger.warn('[GToM] LLM call failed, using fallback implementation', {
+        component: 'ConflictPredictor',
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     return this.predictRelationalConflictsFallback(request);

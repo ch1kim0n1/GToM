@@ -23,3 +23,12 @@ receipts-*.jsonl
 # Build output
 dist/
 *.js.map
+
+# Added by security audit
+build/
+.env.*
+!.env.example
+.nyc_output/
+*.db-shm
+*.db-wal
+receipts/

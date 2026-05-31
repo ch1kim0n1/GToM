@@ -140,6 +140,7 @@ function redactPII(receipt: any): any {
 
 export class ReceiptRegistry {
   private static appendQueues = new Map<string, Promise<void>>();
+  private static writeQueues = new Map<string, Promise<void>>();
 
   private basePath: string;
   private baseDir: string;
@@ -162,9 +163,13 @@ export class ReceiptRegistry {
     this.baseDir = options.baseDir ?? path.join(process.cwd(), normalizedProjectName, 'test', 'baselines');
     this.basePath = path.join(this.baseDir, `receipts-${this.week}.jsonl`);
     this.schemaPath = path.join(this.baseDir, `schema.json`);
-    this.hmacSecret = options.hmacSecret
+    const resolvedSecret = options.hmacSecret
       ?? defaultSecretManager.getSecret('GTOM_RECEIPT_HMAC_SECRET')
-      ?? 'gtom-dev-receipt-secret';
+      ?? process.env.GTOM_RECEIPT_SECRET;
+    if (!resolvedSecret) {
+      throw new Error('GTOM_RECEIPT_SECRET environment variable must be set');
+    }
+    this.hmacSecret = resolvedSecret;
     this.ttlDays = options.ttlDays ?? parseInt(process.env.GTOM_RECEIPT_TTL_DAYS ?? `${DEFAULT_RECEIPT_TTL_DAYS}`, 10);
     this.archiveAfterDays = options.archiveAfterDays ?? DEFAULT_ARCHIVE_AFTER_DAYS;
     this.postgresUrl = options.postgresUrl === undefined
@@ -255,12 +260,22 @@ export class ReceiptRegistry {
     });
 
     try {
-      await fs.appendFile(this.basePath, line, 'utf8');
+      await this.appendToFile(this.basePath, JSON.stringify(redactedReceipt));
     } finally {
       await release();
     }
 
     await this.appendDurable(redactedReceipt);
+  }
+
+  private async appendToFile(filePath: string, line: string): Promise<void> {
+    const current = ReceiptRegistry.writeQueues.get(filePath) ?? Promise.resolve();
+    const next = current.then(async () => {
+      const { appendFile } = await import('fs/promises');
+      await appendFile(filePath, line + '\n', 'utf8');
+    });
+    ReceiptRegistry.writeQueues.set(filePath, next.catch(() => {}));
+    return next;
   }
 
   async getLatest(): Promise<ExecutionReceipt | null> {
@@ -479,7 +494,13 @@ export class ReceiptRegistry {
   }
 }
 
-export async function readReceiptFile(receiptPath: string, hmacSecret = process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret'): Promise<ExecutionReceipt> {
+export async function readReceiptFile(receiptPath: string, hmacSecret?: string): Promise<ExecutionReceipt> {
+  if (!hmacSecret) {
+    hmacSecret = process.env.GTOM_RECEIPT_SECRET;
+  }
+  if (!hmacSecret) {
+    throw new Error('GTOM_RECEIPT_SECRET environment variable must be set');
+  }
   const content = await fs.readFile(receiptPath, 'utf8');
   const trimmed = content.trim();
   if (!trimmed) {
@@ -531,7 +552,13 @@ export function migrateReceiptToVersion(raw: any, targetVersion: number = CURREN
   return receipt as ExecutionReceipt;
 }
 
-export function verifyReceiptSignature(receipt: ExecutionReceipt, hmacSecret = process.env.GTOM_RECEIPT_HMAC_SECRET ?? 'gtom-dev-receipt-secret'): boolean {
+export function verifyReceiptSignature(receipt: ExecutionReceipt, hmacSecret?: string): boolean {
+  if (!hmacSecret) {
+    hmacSecret = process.env.GTOM_RECEIPT_SECRET;
+  }
+  if (!hmacSecret) {
+    throw new Error('GTOM_RECEIPT_SECRET environment variable must be set');
+  }
   const signature = receipt.metadata?.receipt_signature;
   if (!signature) {
     return false;
