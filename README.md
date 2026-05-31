@@ -41,13 +41,13 @@ npm link
 gtom --help
 ```
 
-### Install from PyPI (`pip install gtom`)
+### Install from PyPI (`pip install gtom-cli`)
 
-The `gtom` CLI is also published to PyPI as a thin Python launcher around a
-self-contained JavaScript bundle of the tool:
+The `gtom` CLI is also published to PyPI (as `gtom-cli`, since `gtom` is taken)
+as a thin Python launcher around a self-contained JavaScript bundle of the tool:
 
 ```bash
-pip install gtom
+pip install gtom-cli
 gtom --help
 ```
 

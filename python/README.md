@@ -10,7 +10,7 @@ of the `gtom` Node.js CLI and runs it through your local Node.js runtime.
 ## Install from PyPI
 
 ```bash
-pip install gtom
+pip install gtom-cli
 ```
 
 This installs a `gtom` command on your `PATH`. The package bundles the entire
