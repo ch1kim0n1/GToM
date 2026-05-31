@@ -41,6 +41,30 @@ npm link
 gtom --help
 ```
 
+### Install from PyPI (`pip install gtom`)
+
+The `gtom` CLI is also published to PyPI as a thin Python launcher around a
+self-contained JavaScript bundle of the tool:
+
+```bash
+pip install gtom
+gtom --help
+```
+
+Requirements and notes:
+
+- **Node.js >= 18 is a runtime prerequisite** (gtom is a JS tool). Install it
+  from <https://nodejs.org/>. If `node` is not on `PATH`, `gtom` prints an
+  install hint and exits non-zero.
+- **SQLite persistence is optional.** The bundle excludes the native
+  `better-sqlite3` module (it needs a C++ toolchain to compile), so the
+  pip-installed CLI runs in an in-memory / no-persistence mode by default. All
+  core commands work without it; enable durable SQLite via the npm install or
+  use the PostgreSQL backend.
+
+Packaging sources live under `python/`; regenerate the bundle and wheel with
+`scripts/build_pypi.sh`.
+
 ## Quick Start
 
 ```bash

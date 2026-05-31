@@ -6,7 +6,7 @@ coverage/
 .DS_Store
 *.log
 
-# Runtime data — never commit
+# Runtime data â€” never commit
 node_modules/
 *.db
 *.sqlite
@@ -32,3 +32,11 @@ build/
 *.db-shm
 *.db-wal
 receipts/
+
+# Python packaging (python/) build + cache artifacts
+__pycache__/
+*.pyc
+python/dist/
+python/build/
+*.egg-info/
+.venv*/
