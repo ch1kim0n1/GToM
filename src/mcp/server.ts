@@ -80,10 +80,10 @@ class GToMMCPServer {
     this.gtom = new GToM();
 
     // Initialize authentication middleware
-    const mcpSecret = process.env.GTOM_MCP_SECRET;
-    if (!mcpSecret) {
-      throw new Error('GTOM_MCP_SECRET environment variable must be set');
-    }
+    const mcpSecret = process.env.GTOM_MCP_SECRET;
+    if (!mcpSecret) {
+      throw new Error('GTOM_MCP_SECRET environment variable must be set');
+    }
     const authSecret = mcpSecret;
     this.authMiddleware = createAuthMiddleware({
       secret: authSecret,
@@ -91,7 +91,9 @@ class GToMMCPServer {
       defaultRoles: ['read', 'write'],
     });
 
-    this.authRequired = process.env.GTOM_MCP_AUTH_REQUIRED === 'true';
+    // Secure by default: auth is required unless explicitly disabled for local
+    // dev via GTOM_MCP_AUTH_REQUIRED=false.
+    this.authRequired = process.env.GTOM_MCP_AUTH_REQUIRED !== 'false';
     this.rateLimitRpm = parseInt(process.env.GTOM_RATE_LIMIT_RPM || '60', 10);
     this.rateLimitRph = parseInt(process.env.GTOM_RATE_LIMIT_RPH || '1000', 10);
     this.permissions = new PermissionManager();

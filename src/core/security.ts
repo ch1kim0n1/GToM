@@ -24,18 +24,60 @@ interface RateWindow {
   hour_start: number;
 }
 
+const RATE_HOUR_WINDOW_MS = 60 * 60 * 1000;
+
 export class FixedWindowRateLimiter {
   private readonly usage = new Map<string, RateWindow>();
+  private readonly maxEntries: number;
 
   constructor(
     private readonly requestsPerMinute: number,
     private readonly requestsPerHour: number,
-  ) {}
+    maxEntries = parseInt(process.env.GTOM_RATE_LIMIT_MAX_ENTRIES ?? '50000', 10),
+  ) {
+    this.maxEntries = Number.isFinite(maxEntries) && maxEntries > 0 ? maxEntries : 50000;
+  }
+
+  /**
+   * Drop windows whose hour bucket has fully elapsed (they would reset on next
+   * access anyway, so the state is dead weight) and, if still over the cap,
+   * evict the oldest entries first. This bounds memory regardless of how many
+   * distinct identities (e.g. spoofed XFF / rotated tokens) are seen.
+   */
+  private evictStale(now: number): void {
+    for (const [key, window] of this.usage) {
+      if (now - window.hour_start >= RATE_HOUR_WINDOW_MS) {
+        this.usage.delete(key);
+      }
+    }
+    // Evict down to maxEntries-1 so that the about-to-be-inserted new entry
+    // keeps the total at or below maxEntries.
+    if (this.usage.size < this.maxEntries) return;
+    // Map preserves insertion order; oldest-inserted keys come first.
+    const overflow = this.usage.size - this.maxEntries + 1;
+    let removed = 0;
+    for (const key of this.usage.keys()) {
+      if (removed >= overflow) break;
+      this.usage.delete(key);
+      removed++;
+    }
+  }
+
+  /** Exposed for tests/monitoring. */
+  size(): number {
+    return this.usage.size;
+  }
 
   check(identity: string, now = Date.now()): RateLimitResult {
     const minuteWindow = 60 * 1000;
-    const hourWindow = 60 * 60 * 1000;
-    const current = this.usage.get(identity) ?? {
+    const hourWindow = RATE_HOUR_WINDOW_MS;
+    const existing = this.usage.get(identity);
+    if (!existing) {
+      // Opportunistically sweep stale/overflow entries when a new identity
+      // appears — this is the path an attacker hammers with rotating keys.
+      this.evictStale(now);
+    }
+    const current = existing ?? {
       minute_count: 0,
       minute_start: now,
       hour_count: 0,
@@ -74,7 +116,9 @@ export class FixedWindowRateLimiter {
 }
 
 export function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+  // 32 hex chars = 128 bits: collision-resistant enough for identity / audit /
+  // rate-limit keys across realistic token populations.
+  return createHash('sha256').update(token).digest('hex').slice(0, 32);
 }
 
 export function constantTimeEquals(left: string, right: string): boolean {
