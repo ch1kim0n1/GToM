@@ -7,6 +7,7 @@ import {
   RelationalConflictPrediction,
   RelationalConflictRequest,
   RelationalConflictResponse,
+  RelationalConflictResponseSchema,
   RelationalConflictType,
 } from '../types/index.js';
 import { LLMClient, LLMCallResult } from './llm-client.js';
@@ -63,8 +64,14 @@ export class ConflictPredictor {
       }
     }
     
+    const aggregateRisk = aggregateRiskOf(predictions);
     return {
       predicted_conflicts: predictions,
+      aggregate_risk: aggregateRisk,
+      recommendation: recommendationFor(predictions, aggregateRisk),
+      confidence: predictions.length > 0
+        ? average(predictions.map(prediction => prediction.confidence), 0.8)
+        : 0.9,
     };
   }
 
@@ -75,8 +82,13 @@ export class ConflictPredictor {
         temperature: 0.1,
       });
       const parsed = this.parseRelationalLLMResult(request, result.content);
-      if (parsed.predicted_conflicts.length > 0) {
-        return parsed;
+      // Validate the LLM-derived response against the published contract before
+      // returning it to callers. Anything off-contract (e.g. an out-of-enum
+      // recommended_action that slipped through) means we fall back to the
+      // deterministic rule-based path rather than emit invalid data.
+      const validated = RelationalConflictResponseSchema.safeParse(parsed);
+      if (validated.success && validated.data.predicted_conflicts.length > 0) {
+        return validated.data;
       }
     } catch (error) {
       globalObservability.logger.warn('[GToM] LLM call failed, using fallback implementation', {
@@ -124,7 +136,7 @@ ${JSON.stringify(request, null, 2)}`;
         severity: clamp01(Number(item.severity)),
         confidence: clamp01(Number(item.confidence ?? parsed.confidence ?? 0.6)),
         reasoning: String(item.reasoning || 'LLM relational conflict signal'),
-        recommended_action: item.recommended_action || 'monitor',
+        recommended_action: coerceRelationalAction(item.recommended_action),
       }));
     const aggregateRisk = parsed.aggregate_risk === undefined
       ? aggregateRiskOf(conflicts)
@@ -390,16 +402,50 @@ ${JSON.stringify(request, null, 2)}`;
   }
 
   /**
-   * Check if goals are compatible
+   * Check if goals are compatible.
+   *
+   * Some optimization goals pull in directly opposing directions (e.g. raw
+   * performance work often regresses security hardening, and vice versa).
+   * When two attempts pursue such opposing goals, treat them as incompatible
+   * so `predictGoalConflict` can surface a reroute recommendation.
    */
   private areGoalsCompatible(goalA: string, goalB: string): boolean {
-    // Most goals are compatible unless explicitly contradictory
-    return true;
+    if (goalA === goalB) return true;
+
+    const incompatible: Record<string, string[]> = {
+      performance: ['security'],
+      security: ['performance'],
+    };
+
+    const incompatibilities = incompatible[goalA] || [];
+    return !incompatibilities.includes(goalB);
   }
 }
 
-function lowerIncludes(str: string, search: string): boolean {
-  return str.toLowerCase().includes(search);
+function recommendationFor(
+  conflicts: Array<{ severity: number }>,
+  aggregateRisk: number,
+): string {
+  if (conflicts.length === 0) {
+    return 'No conflicts predicted; proceed in parallel.';
+  }
+  if (aggregateRisk >= 0.7) {
+    return 'High conflict risk; serialize or reroute conflicting attempts before proceeding.';
+  }
+  if (aggregateRisk >= 0.4) {
+    return 'Moderate conflict risk; review recommended actions before parallel execution.';
+  }
+  return 'Low conflict risk; conflicts can likely be merged or resolved automatically.';
+}
+
+const RELATIONAL_ACTIONS = new Set(['surface_gently', 'defer', 'refuse', 'monitor']);
+
+function coerceRelationalAction(
+  action: unknown,
+): RelationalConflictPrediction['recommended_action'] {
+  return RELATIONAL_ACTIONS.has(action as string)
+    ? (action as RelationalConflictPrediction['recommended_action'])
+    : 'monitor';
 }
 
 function hasThirdPartySignal(text: string): boolean {

@@ -167,27 +167,49 @@ export const IntentDisambiguationSchema = z.object({
 
 export type IntentDisambiguation = z.infer<typeof IntentDisambiguationSchema>;
 
+// Value type allowed inside an attempt's `current_state` record. Kept narrow so
+// that arbitrary nested objects cannot smuggle large/abusive payloads through.
+const CurrentStateValueSchema = z.union([
+  z.string().max(1000),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).max(100),
+]);
+
+// `ZodRecord` has no `.max()`; bound the key count via superRefine instead.
+const CurrentStateSchema = z
+  .record(CurrentStateValueSchema)
+  .superRefine((value, ctx) => {
+    if (Object.keys(value).length > 50) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'current_state may not contain more than 50 keys',
+      });
+    }
+  });
+
+export const ConflictAttemptSchema = z.object({
+  attempt_id: z.string().uuid(),
+  config_id: z.string().uuid(),
+  current_state: CurrentStateSchema,
+  recent_actions: z.array(z.string()),
+});
+
+export type ConflictAttempt = z.infer<typeof ConflictAttemptSchema>;
+
 export const ConflictPredictionRequestSchema = z.object({
   task: z.any(),
-  active_attempts: z.array(z.object({
-    attempt_id: z.string().uuid(),
-    config_id: z.string().uuid(),
-    current_state: z.record(z.union([
-      z.string().max(1000),
-      z.number(),
-      z.boolean(),
-      z.null(),
-      z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).max(100),
-    ])).max(50),
-    recent_actions: z.array(z.string()),
-  })),
+  active_attempts: z.array(ConflictAttemptSchema),
 });
 
 export type ConflictPredictionRequest = z.infer<typeof ConflictPredictionRequestSchema>;
 
 export const ConflictPredictionResponseSchema = z.object({
   predicted_conflicts: z.array(ConflictPredictionSchema),
-  aggregate_risk: z.number().min(0).max(1).optional(),
+  aggregate_risk: z.number().min(0).max(1),
+  recommendation: z.string(),
+  confidence: z.number().min(0).max(1),
 });
 
 export type ConflictPredictionResponse = z.infer<typeof ConflictPredictionResponseSchema>;

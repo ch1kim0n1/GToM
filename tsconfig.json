@@ -5,6 +5,7 @@
     "moduleResolution": "node",
     "outDir": "./dist",
     // "rootDir": "./src", // disabled — imports from ../shared
+    "noEmitOnError": true,
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
