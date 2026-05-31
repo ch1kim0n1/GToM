@@ -9,6 +9,21 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('GBrainClient', () => {
+  // These tests use `gbrain.local` as a stub endpoint. `.local` is a link-local
+  // mDNS domain that the SSRF guard (#52) blocks by default, so opt in for the
+  // duration of this suite.
+  const priorAllowPrivate = process.env.GTOM_ALLOW_PRIVATE_ENDPOINTS;
+  beforeAll(() => {
+    process.env.GTOM_ALLOW_PRIVATE_ENDPOINTS = 'true';
+  });
+  afterAll(() => {
+    if (priorAllowPrivate === undefined) {
+      delete process.env.GTOM_ALLOW_PRIVATE_ENDPOINTS;
+    } else {
+      process.env.GTOM_ALLOW_PRIVATE_ENDPOINTS = priorAllowPrivate;
+    }
+  });
+
   it('uses typed HTTP calls with auth headers and Zod response validation', async () => {
     const fetchImpl = jest.fn().mockResolvedValue(jsonResponse({
       beliefs: [{ content: 'prefers reversible changes', confidence: 0.9, source: 'profile' }],

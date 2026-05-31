@@ -46,7 +46,8 @@ describe('security controls', () => {
     expect(manager.authorize(manager.getPrincipal('viewer-1'), ['read'], 'gtom_health')).toBe(true);
     expect(manager.authorize(manager.getPrincipal('viewer-1'), ['write'], 'gtom_ingest')).toBe(false);
     expect(manager.authorize(manager.getPrincipal('operator-1'), ['write'], 'gtom_ingest')).toBe(true);
-    expect(hashToken('unit-token-value')).toMatch(/^[a-f0-9]{16}$/);
+    // Issue #53: identifier must be >= 128 bits (32 hex chars).
+    expect(hashToken('unit-token-value')).toMatch(/^[a-f0-9]{32}$/);
   });
 
   it('rejects unsafe user-facing input', () => {
